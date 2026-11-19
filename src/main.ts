@@ -1,5 +1,5 @@
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
-import { bootstrap, lighting } from './engine/render';
+import { bootstrap, lighting, whenSceneReady } from './engine/render';
 import { createCircuit, buildTrack } from './track';
 import { createCameras } from './cameras';
 import { buildVehicle } from './vehicles/gt3Builder';
@@ -21,10 +21,40 @@ const progress = (s: string) => {
   const e = document.getElementById('progress');
   if (e) e.textContent = s;
 };
+const lifetime = new AbortController();
+const releases: (() => void)[] = [];
+function onDispose(release: () => void) {
+  // An async acquisition (notably Jolt) can finish after its sibling failed or the page left.
+  if (lifetime.signal.aborted) release();
+  else releases.push(release);
+}
+function dispose() {
+  if (lifetime.signal.aborted) return;
+  lifetime.abort();
+  while (releases.length) {
+    try {
+      releases.pop()!();
+    } catch (e) {
+      console.error('Session cleanup failed', e);
+    }
+  }
+}
+window.addEventListener('pagehide', (e) => {
+  if (!e.persisted) dispose();
+}, { signal: lifetime.signal });
+
 async function boot() {
   const { engine, scene, canvas, backend, adapter, reason, software } = await bootstrap(
     document.querySelector('#scene')!,
   );
+  onDispose(() => {
+    try {
+      scene.dispose();
+    } finally {
+      engine.dispose();
+    }
+  });
+  if (lifetime.signal.aborted) return;
   const query = new URLSearchParams(location.search),
     qa = query.get('qa') === '1';
   progress('SURVEYING CIRCUIT');
@@ -36,13 +66,20 @@ async function boot() {
     trackRoot = new TransformNode('circuit assembly', scene);
   for (const n of scene.rootNodes.slice()) if (!before.has(n) && n !== trackRoot) n.parent = trackRoot;
   trackRoot.setEnabled(false);
-  const firstSky = light.setWeather('golden');
   light.quality('high');
   progress('PREPARING CAR & SUSPENSION');
-  const [world] = await Promise.all([createWorld(circuit, track.colliders), firstSky]),
-    race = createRace(circuit, world, backend),
+  const [world] = await Promise.all([
+    createWorld(circuit, track.colliders).then((w) => {
+      onDispose(w.dispose);
+      return w;
+    }),
+    light.setWeather('golden'),
+  ]);
+  if (lifetime.signal.aborted) return;
+  const race = createRace(circuit, world, backend),
     s = race.state,
     audio = createAudio();
+  onDispose(audio.dispose);
   let rigs: VehicleRig[] = [],
     ticket = 0,
     busy = false,
@@ -51,32 +88,51 @@ async function boot() {
     frozen = false,
     prior: 'race' | 'lights' = 'race';
   const curtain = document.querySelector<HTMLElement>('#loading')!;
+  const uiRoot = document.createElement('div');
+  document.querySelector('#ui')!.append(uiRoot);
+  onDispose(() => uiRoot.remove());
   function wait(label: string) {
+    busy = true;
+    input.clear();
+    uiRoot.inert = true;
     curtain.style.display = 'grid';
     progress(label);
-  }
-  const ready = () => {
-    curtain.style.display = 'none';
-  };
-  const sceneReady = async () => {
-    await scene.whenReadyAsync();
-  };
-  function place() {
-    for (let i = 0; i < rigs.length; i++) {
-      const d = s.drivers[i];
-      if (d) rigs[i].update(d, 0);
-    }
   }
   function discard() {
     for (const r of rigs) r.dispose();
     rigs = [];
   }
-  function shadows() {
+  async function presentCars() {
+    const token = ++ticket;
+    cameras.update(s, false, 0);
+    ui.update(s);
+    const loads = await Promise.allSettled(
+      s.drivers.map((d) => buildVehicle(
+        scene,
+        d.id === 0 ? s.settings.chassis : d.id % 2 ? 'concept' : '458',
+        d.livery,
+        d.number,
+      )),
+    );
+    const group = loads.flatMap((r) => r.status === 'fulfilled' ? [r.value] : []);
+    const failed = loads.find((r) => r.status === 'rejected');
+    if (token !== ticket || failed) {
+      group.forEach((r) => r.dispose());
+      if (token === ticket && failed) throw failed.reason;
+      return;
+    }
+    rigs = group;
+    rigs.forEach((r, i) => r.update(s.drivers[i], 0));
     light.casters(scene.meshes.filter((m) => !(s.phase === 'garage' && m.name.startsWith('garage.'))));
+    await whenSceneReady(scene);
+    if (token !== ticket) return;
+    busy = false;
+    acc = 0;
+    uiRoot.inert = false;
+    curtain.style.display = 'none';
+    if ((s.phase === 'race' || s.phase === 'lights') && !document.hidden && document.hasFocus()) canvas.focus();
   }
   async function garage() {
-    const token = ++ticket;
-    busy = true;
     wait('OPENING COMPETITION GARAGE');
     world.clear();
     discard();
@@ -87,62 +143,22 @@ async function boot() {
     s.elapsed = 0;
     s.autopilot = false;
     acc = 0;
-    const d = driver(0, s.settings.livery);
-    s.drivers = [d];
-    cameras.update(s, false, 0);
-    ui.update(s);
-    const rig = await buildVehicle(scene, s.settings.chassis, d.livery, d.number);
-    if (token !== ticket) {
-      rig.dispose();
-      return;
-    }
-    rigs = [rig];
-    place();
-    shadows();
-    await sceneReady();
-    if (token === ticket) {
-      busy = false;
-      ready();
-    }
+    s.drivers = [driver(0, s.settings.livery)];
+    audio.update(s);
+    await presentCars();
   }
   async function start(skip = false) {
     if (busy) return;
-    const token = ++ticket;
-    busy = true;
     wait('FORMING THE STARTING GRID');
     discard();
     race.start(skip);
-    input.clear();
     trackRoot.setEnabled(true);
     track.setLights(s.lights);
-    cameras.update(s, false, 0);
-    ui.update(s);
-    const group = await Promise.all(
-      s.drivers.map((d) =>
-        buildVehicle(
-          scene,
-          d.id === 0 ? s.settings.chassis : d.id % 2 ? 'concept' : '458',
-          d.livery,
-          d.number,
-        ),
-      ),
-    );
-    if (token !== ticket) {
-      group.forEach((r) => r.dispose());
-      return;
-    }
-    rigs = group;
-    place();
-    shadows();
-    await sceneReady();
-    if (token === ticket) {
-      busy = false;
-      acc = 0;
-      ready();
-      canvas.focus();
-    }
+    if (document.hidden) input.interrupt();
+    await presentCars();
   }
   function configure(p: Partial<Settings>) {
+    if (lifetime.signal.aborted) return;
     const old = { ...s.settings };
     Object.assign(s.settings, p);
     if (old.weather !== s.settings.weather) {
@@ -160,7 +176,8 @@ async function boot() {
       void start().catch(failure);
     },
     resume() {
-      if (s.phase === 'paused') {
+      if (!busy && !document.hidden && s.phase === 'paused') {
+        audio.unlock();
         s.phase = prior;
         acc = 0;
         input.clear();
@@ -185,27 +202,36 @@ async function boot() {
       s.muted = !s.muted;
     },
   };
-  const ui = createUI(document.querySelector('#ui')!, circuit, actions),
+  const ui = createUI(uiRoot, circuit, actions),
     modes: CameraMode[] = ['chase', 'cockpit', 'hood', 'tv'];
+  function pause() {
+    if (s.phase !== 'race' && s.phase !== 'lights') return;
+    prior = s.phase;
+    s.phase = 'paused';
+    acc = 0;
+    // Hidden pages need not receive another frame to silence continuous audio.
+    audio.update(s);
+    ui.update(s);
+  }
   const input = controls(canvas, s, (code) => {
     if (busy) return;
     if (code === 'Escape') {
       if (s.phase === 'paused') actions.resume();
-      else if (s.phase === 'race' || s.phase === 'lights') {
-        prior = s.phase;
-        s.phase = 'paused';
-        input.clear();
-      }
+      else input.interrupt();
     } else if (code === 'KeyM') actions.toggleMute();
     else if (s.phase === 'race' || s.phase === 'lights') {
       if (code === 'KeyC') s.camera = modes[(modes.indexOf(s.camera) + 1) % 4];
       if (code === 'KeyT') actions.cycleTc();
       if (code === 'KeyY') actions.cycleAbs();
-      if (code === 'KeyR') world.reset(s.drivers[0]);
+      if (code === 'KeyR') race.resetPlayer();
       if ((code === 'KeyQ' || code === 'KeyE') && s.settings.transmission === 'manual')
         world.shift(s.drivers[0], code === 'KeyQ' ? -1 : 1);
     }
-  });
+  }, pause);
+  onDispose(input.dispose);
+  window.addEventListener('pagehide', (e) => {
+    if (e.persisted) input.interrupt();
+  }, { signal: lifetime.signal });
   function snapshot() {
     return {
       ...structuredClone(s),
@@ -245,23 +271,14 @@ async function boot() {
       : {}),
   };
   Object.assign(window, { __GT3_DEBUG__: debug });
-  const resize = () => engine.resize();
-  window.addEventListener('resize', resize);
-  window.addEventListener(
-    'pagehide',
-    (e) => {
-      if (!e.persisted) {
-        engine.stopRenderLoop();
-        input.dispose();
-        audio.dispose();
-        world.dispose();
-        window.removeEventListener('resize', resize);
-        scene.dispose();
-        engine.dispose();
-      }
-    },
-    { once: true },
-  );
+  window.addEventListener('resize', () => engine.resize(), { signal: lifetime.signal });
+  onDispose(() => {
+    ++ticket;
+    busy = true;
+    Reflect.deleteProperty(window, '__GT3_DEBUG__');
+    engine.stopRenderLoop();
+    discard();
+  });
   engine.runRenderLoop(() => {
     const dt = Math.max(0.001, Math.min(0.25, engine.getDeltaTime() / 1000)),
       u = input.sample(dt);
@@ -277,7 +294,7 @@ async function boot() {
     track.setLights(s.lights);
     light.update(s, rigs);
     s.fps = engine.getFps();
-    audio.update(s);
+    if (!busy) audio.update(s);
     ui.update(s);
     scene.render();
     frames++;
@@ -288,6 +305,8 @@ async function boot() {
   } else await garage();
 }
 function failure(e: unknown) {
+  if (lifetime.signal.aborted) return;
+  dispose();
   console.error(e);
   document.querySelector<HTMLElement>('#loading')!.style.display = 'grid';
   progress(e instanceof Error ? e.message : String(e));

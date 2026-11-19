@@ -1,6 +1,21 @@
 import { defaults, teams, type Circuit, type Driver, type RaceState } from '../types';
-import { createWorld, STEP, type Controls } from './world';
+import { createWorld, factoryAssists, STEP, type Controls } from './world';
 import { createPilots } from '../ai/grid';
+
+export const SPRINT_LAPS = 3;
+
+export function raceOrder(drivers: readonly Driver[]) {
+  return [...drivers].sort((a, b) => {
+    if (a.completedLaps !== b.completedLaps) return b.completedLaps - a.completedLaps;
+    if (a.finishTime === null && b.finishTime === null)
+      return (b.distanceAtFlag ?? b.distance) - (a.distanceAtFlag ?? a.distance) || a.id - b.id;
+    // On equal laps a car still running crossed this lap line before the flag.
+    return (a.finishTime ?? -Infinity) - (b.finishTime ?? -Infinity) || a.id - b.id;
+  });
+}
+
+const crossingTime = (start: number, from: number, to: number, line: number) =>
+  start + STEP * ((line - from) / (to - from));
 
 export function driver(id: number, livery: number): Driver {
   return {
@@ -28,6 +43,8 @@ export function driver(id: number, livery: number): Driver {
     s: 0,
     d: 0,
     distance: 0,
+    completedLaps: 0,
+    finishTime: null,
     speed: 0,
     rpm: 1650,
     gear: 1,
@@ -55,10 +72,10 @@ export function createRace(track: Circuit, world: Awaited<ReturnType<typeof crea
     lapTime: 0,
     bestLap: 0,
     sectors: [],
+    lastSectors: [],
     delta: 0,
     lights: 0,
-    tc: 3,
-    abs: 2,
+    ...factoryAssists,
     muted: false,
     autopilot: false,
     fps: 0,
@@ -70,24 +87,27 @@ export function createRace(track: Circuit, world: Awaited<ReturnType<typeof crea
   };
   const { pilot, reset: resetPilots } = createPilots(track),
     stopped = { throttle: 0, brake: 1, right: 0, handbrake: 1, draft: 0 };
+  // Roughly 10 m timing gates, including the exact three sector boundaries.
+  const gatesPerSector = Math.ceil(track.length / 3 / 10), gatesPerLap = 3 * gatesPerSector;
+  const crossings: { driver: Driver; time: number }[] = [];
+  const tickDistances: number[] = [];
   let countdown = 0,
-    sector = 0,
-    lastSector = 0,
-    nextSector = 0,
+    chequeredAt = Infinity,
+    lapStart = 0,
     reference: number[] = [],
-    splits: number[] = [];
+    splits: number[] = [0];
   const stalled: number[] = [];
+  const gridLane = (id: number) => state.settings.mode === 'hotlap' ? 0 : id % 2 === 0 ? -2.8 : 2.8;
   function start(skipLights = false) {
     world.clear();
     resetPilots();
     stalled.length = 0;
     state.drivers = [];
     countdown = 0;
-    sector = 0;
-    lastSector = 0;
-    nextSector = track.length / 3;
+    chequeredAt = Infinity;
+    lapStart = 0;
     reference = [];
-    splits = [];
+    splits = [0];
     Object.assign(state, {
       phase: skipLights ? 'race' : 'lights',
       elapsed: 0,
@@ -95,6 +115,7 @@ export function createRace(track: Circuit, world: Awaited<ReturnType<typeof crea
       lapTime: 0,
       bestLap: 0,
       sectors: [],
+      lastSectors: [],
       delta: 0,
       lights: skipLights ? 0 : 1,
       peakSpeedKmh: 0,
@@ -106,7 +127,7 @@ export function createRace(track: Circuit, world: Awaited<ReturnType<typeof crea
       const d = driver(i, (i + state.settings.livery) % 5);
       const startS = 6 * i;
       d.distance = startS;
-      world.add(d, startS, state.settings.mode === 'hotlap' ? 0 : i % 2 === 0 ? -2.8 : 2.8);
+      world.add(d, startS, gridLane(i));
       state.drivers.push(d);
       stalled.push(0);
     }
@@ -116,6 +137,34 @@ export function createRace(track: Circuit, world: Awaited<ReturnType<typeof crea
       world.step();
       for (const d of state.drivers) world.read(d);
     }
+  }
+  function resetAtStation(d: Driver, lane: number, allowAlternate = false) {
+    const centre = track.at(d.s), sn = Math.sin(centre.yaw), cs = Math.cos(centre.yaw);
+    const edge = centre.halfWidth - 1.2, occupied: number[] = [];
+    for (const r of state.drivers) {
+      if (r === d) continue;
+      const dx = r.x - centre.x, dz = r.z - centre.z;
+      if (Math.abs(dx * sn + dz * cs) <= 7) occupied.push(dx * cs - dz * sn);
+    }
+    // A track-aligned rejoin needs fore/aft space, but can fit alongside a rival.
+    // 3.5 m covers our half-width plus even a sideways rival's half-diagonal.
+    const clear = (l: number) => Math.abs(l) <= edge && occupied.every(other => Math.abs(other - l) > 3.5);
+    if (!clear(lane)) {
+      if (!allowAlternate) return false;
+      occupied.sort((a, b) => a - b);
+      const slots = [-edge, edge, d.d];
+      // Any clear interior gap contains the midpoint between its two neighbours.
+      for (let i = 1; i < occupied.length; i++) slots.push((occupied[i - 1] + occupied[i]) / 2);
+      const alternate = slots.sort((a, b) => Math.abs(a - d.d) - Math.abs(b - d.d)).find(clear);
+      if (alternate === undefined) return false;
+      lane = alternate;
+    }
+    world.reset(d, d.s, lane);
+    return true;
+  }
+  function resetPlayer() {
+    if (state.phase === 'lights') return resetAtStation(state.drivers[0], gridLane(0));
+    return state.phase === 'race' && resetAtStation(state.drivers[0], 0, true);
   }
   function advance(player: Controls) {
     if (state.phase !== 'lights' && state.phase !== 'race') return;
@@ -140,59 +189,85 @@ export function createRace(track: Circuit, world: Awaited<ReturnType<typeof crea
             cmd.draft = Math.max(cmd.draft, (30 - gap) / 26);
         }
       }
+      if (d.id !== 0 && state.phase === 'race') {
+        const tryingToDrive = cmd.throttle > 0.1 && cmd.brake === 0 && cmd.handbrake === 0;
+        stalled[d.id] = d.speed < 2 && tryingToDrive ? stalled[d.id] + STEP : 0;
+      }
       world.control(d, cmd, state);
     }
+    const p = state.drivers[0], playerFrom = p.distance, tickStart = state.elapsed;
+    let playerCrossing = Infinity;
     world.step();
     for (const d of state.drivers) {
+      const from = tickDistances[d.id] = d.distance;
       world.read(d);
+      const line = (d.completedLaps + 1) * track.length;
+      if (state.phase === 'race' && d.finishTime === null && from < line && line <= d.distance) {
+        if (state.settings.mode === 'sprint') {
+          const time = crossingTime(tickStart, from, d.distance, line);
+          crossings.push({ driver: d, time });
+          if (d === p) playerCrossing = time;
+          if (d.completedLaps + 1 === SPRINT_LAPS) chequeredAt = Math.min(chequeredAt, time);
+        } else d.completedLaps++;
+      }
       if (
         ![d.x, d.y, d.z, d.yaw, d.speed, d.rpm, ...d.wheelCompressionM, ...d.brakeTempC].every(
           Number.isFinite,
         )
       )
         state.nanDetected = true;
-      if (d.id !== 0 && state.phase === 'race') {
-        stalled[d.id] = d.speed < 2 ? stalled[d.id] + STEP : 0;
-        if (stalled[d.id] > 4) {
-          const gap = state.drivers.every((r) => r === d || Math.hypot(r.x - d.x, r.z - d.z) > 7);
-          if (gap) {
-            world.reset(d, d.s, 0);
-            stalled[d.id] = 0;
-          }
-        }
-      }
     }
     if (state.phase !== 'race') return;
-    const p = state.drivers[0];
-    state.elapsed += STEP;
-    state.lapTime += STEP;
+    // Check the proposed centreline slot against everyone's just-read position.
+    for (const d of state.drivers) {
+      if (stalled[d.id] > 4 && d.speed < 2 && resetAtStation(d, 0)) stalled[d.id] = 0;
+    }
+    // A lapped car can cross just before or just after the winner in the same tick.
+    const cutoff = playerCrossing >= chequeredAt ? playerCrossing : Infinity;
+    for (const { driver, time } of crossings) {
+      if (time > cutoff) continue;
+      driver.completedLaps++;
+      if (time >= chequeredAt) driver.finishTime = time;
+    }
+    crossings.length = 0;
+    state.elapsed = Math.min(tickStart + STEP, cutoff);
     state.peakSpeedKmh = Math.max(state.peakSpeedKmh, p.speed * 3.6);
     state.maxGearReached = Math.max(state.maxGearReached, p.gear);
     state.maxBrakeTempC = Math.max(state.maxBrakeTempC, ...p.brakeTempC);
-    const bin = Math.floor(((p.s + track.length) % track.length) / 10);
-    if (splits[bin] === undefined) splits[bin] = state.lapTime;
-    state.delta = reference[bin] !== undefined ? state.lapTime - reference[bin] : 0;
-    if (p.distance >= nextSector) {
-      state.sectors[sector++] = state.lapTime - lastSector;
-      lastSector = state.lapTime;
-      nextSector += track.length / 3;
-      if (sector === 3) {
-        if (!state.bestLap || state.lapTime < state.bestLap) {
-          state.bestLap = state.lapTime;
-          reference = splits;
-        }
-        if (state.lap === 3 && state.settings.mode === 'sprint') {
-          state.phase = 'finished';
-          return;
-        }
-        state.lap++;
-        sector = 0;
-        lastSector = 0;
-        state.lapTime = 0;
-        state.sectors = [];
-        splits = [];
+    while (Number.isFinite(p.distance)) {
+      const gate = splits.length, line = (state.lap - 1 + gate / gatesPerLap) * track.length;
+      if (!(playerFrom < line && line <= p.distance)) break;
+      const at = crossingTime(tickStart, playerFrom, p.distance, line), lapTime = at - lapStart;
+      splits.push(lapTime);
+      if (gate % gatesPerSector !== 0) continue;
+      state.sectors.push(lapTime - splits[gate - gatesPerSector]);
+      if (gate !== gatesPerLap) continue;
+      state.lastSectors = state.sectors;
+      state.delta = state.bestLap ? lapTime - state.bestLap : 0;
+      if (!state.bestLap || lapTime < state.bestLap) {
+        state.bestLap = lapTime;
+        reference = splits;
       }
+      if (p.finishTime !== null) {
+        // Freeze the timing order at the flag, without rewinding Jolt's rendered poses.
+        const fraction = (p.finishTime - tickStart) / STEP;
+        for (const d of state.drivers) if (d.finishTime === null)
+          d.distanceAtFlag = tickDistances[d.id] + fraction * (d.distance - tickDistances[d.id]);
+        state.lapTime = lapTime;
+        state.phase = 'finished';
+        return;
+      }
+      state.lap++;
+      lapStart = at;
+      state.sectors = [];
+      splits = [0];
+    }
+    state.lapTime = state.elapsed - lapStart;
+    if (reference.length) {
+      const pos = Math.max(0, Math.min(gatesPerLap, (p.distance / track.length - (state.lap - 1)) * gatesPerLap));
+      const i = Math.min(gatesPerLap - 1, Math.floor(pos));
+      state.delta = state.lapTime - (reference[i] + (pos - i) * (reference[i + 1] - reference[i]));
     }
   }
-  return { state, start, advance };
+  return { state, start, advance, resetPlayer };
 }

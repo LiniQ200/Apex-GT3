@@ -1,4 +1,6 @@
 import { Engine } from '@babylonjs/core/Engines/engine';
+import { AbstractEngine } from '@babylonjs/core/Engines/abstractEngine';
+import { _CommonDispose } from '@babylonjs/core/Engines/engine.common';
 import { WebGPUEngine } from '@babylonjs/core/Engines/webgpuEngine';
 import '@babylonjs/core/Engines/WebGPU/Extensions/index';
 import '@babylonjs/core/Engines/Extensions/engine.rawTexture';
@@ -22,6 +24,7 @@ import { HDRCubeTexture } from '@babylonjs/core/Materials/Textures/hdrCubeTextur
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { BackgroundMaterial } from '@babylonjs/core/Materials/Background/backgroundMaterial';
 import { ImageProcessingConfiguration } from '@babylonjs/core/Materials/imageProcessingConfiguration';
+import { GetEnvironmentBRDFTexture } from '@babylonjs/core/Misc/brdfTextureTools';
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
 import { DefaultRenderingPipeline } from '@babylonjs/core/PostProcesses/RenderPipeline/Pipelines/defaultRenderingPipeline';
 import { SSAO2RenderingPipeline } from '@babylonjs/core/PostProcesses/RenderPipeline/Pipelines/ssao2RenderingPipeline';
@@ -32,12 +35,32 @@ import type { RaceState, Settings, VehicleRig, Weather } from '../types';
 
 const asset = (name: string) =>
   new URL(`${import.meta.env.BASE_URL}assets/${name}`, window.location.href).href;
+
+class DrivingScene extends Scene {
+  // controls.ts owns input. Scene's constructor otherwise installs a second
+  // device manager that reads gamepads even when the embedding policy denies it.
+  override attachControl() {}
+}
+
+// Babylon drops whenReadyAsync's callback on timeout instead of rejecting it.
+export function whenSceneReady(scene: Scene) {
+  return new Promise<void>((resolve, reject) => {
+    const timeout = scene.onReadyTimeoutObservable.addOnce(() => reject(Error('Timed out preparing the scene.')));
+    const disposed = scene.onDisposeObservable.addOnce(() => reject(Error('Scene disposed.')));
+    scene.executeWhenReady(() => {
+      timeout.remove();
+      disposed.remove();
+      resolve();
+    });
+  });
+}
+
 export async function bootstrap(canvas: HTMLCanvasElement) {
   let engine: WebGPUEngine | Engine | undefined,
+    gpu: WebGPUEngine | undefined,
     reason = '';
-  if (await WebGPUEngine.IsSupportedAsync) {
-    let gpu: WebGPUEngine | undefined;
-    try {
+  try {
+    if (await WebGPUEngine.IsSupportedAsync) {
       gpu = new WebGPUEngine(canvas, {
         antialias: true,
         setMaximumLimits: true,
@@ -46,22 +69,41 @@ export async function bootstrap(canvas: HTMLCanvasElement) {
       });
       await gpu.initAsync();
       engine = gpu;
-    } catch (e) {
-      reason = String(e);
-      console.warn('WebGPU initialization failed; using WebGL2', reason);
-      gpu?.dispose();
-      const replacement = canvas.cloneNode() as HTMLCanvasElement;
-      canvas.replaceWith(replacement);
-      canvas = replacement;
+    } else reason = 'WebGPU adapter unavailable';
+  } catch (e) {
+    reason = String(e);
+    console.warn('WebGPU initialization failed; using WebGL2', reason);
+    if (gpu) {
+      try {
+        gpu.dispose();
+      } catch {
+        // Babylon 9's dispose assumes initAsync reached the GPU query manager.
+        // A rejected device request still owns DOM listeners and an engine-store entry.
+        gpu._device?.destroy();
+        _CommonDispose(gpu, canvas);
+        AbstractEngine.prototype.dispose.call(gpu);
+      }
     }
-  } else reason = 'WebGPU adapter unavailable';
-  engine ??= new Engine(canvas, true, {
-    preserveDrawingBuffer: true,
-    stencil: true,
-    powerPreference: 'high-performance',
-  });
-  if (engine instanceof Engine && engine.webGLVersion < 2)
-    throw Error('This simulator requires WebGL 2 or WebGPU.');
+    const replacement = canvas.cloneNode() as HTMLCanvasElement;
+    canvas.replaceWith(replacement);
+    canvas = replacement;
+  }
+  if (!engine) {
+    const options: WebGLContextAttributes = {
+      antialias: true,
+      preserveDrawingBuffer: true,
+      stencil: true,
+      powerPreference: 'high-performance',
+    };
+    // Avoid constructing a partially registered engine on WebGL1-only/disabled
+    // browsers. Pass the canvas so Babylon still owns context-loss restoration.
+    if (canvas.getContext('webgl2', options)) {
+      const gl = new Engine(canvas, true, options);
+      if (gl.webGLVersion === 2) engine = gl;
+      else gl.dispose();
+    }
+    if (!engine) throw Error('This simulator requires WebGL 2 or WebGPU.');
+  }
   const backend = engine instanceof WebGPUEngine ? 'WebGPU' : 'WebGL2',
     adapter =
       engine instanceof WebGPUEngine
@@ -73,10 +115,22 @@ export async function bootstrap(canvas: HTMLCanvasElement) {
     wasmBinaryUrl: asset('draco/draco_decoder.wasm'),
     fallbackUrl: asset('draco/draco_decoder.js'),
   };
-  const scene = new Scene(engine);
-  scene.clearColor = new Color4(0.28, 0.36, 0.44, 1);
-  scene.skipPointerMovePicking = true;
-  return { engine, scene, canvas, backend, adapter, reason, software };
+  try {
+    const scene = new DrivingScene(engine);
+    scene.clearColor = new Color4(0.28, 0.36, 0.44, 1);
+    scene.skipPointerMovePicking = true;
+    // Babylon's asynchronous BRDF decode dereferences its scene even after
+    // disposal. Finish this shared PBR lookup before handing out the scene.
+    const brdf = GetEnvironmentBRDFTexture(scene);
+    const lookup = { isReady: () => brdf.isReadyOrNotBlocking() };
+    scene.addIsReadyCheck(lookup);
+    await whenSceneReady(scene);
+    scene.removeIsReadyCheck(lookup);
+    return { engine, scene, canvas, backend, adapter, reason, software };
+  } catch (e) {
+    engine.dispose();
+    throw e;
+  }
 }
 
 class OvercastSky extends HDRCubeTexture {
@@ -134,6 +188,10 @@ export function lighting(scene: Scene, software: boolean) {
         () => {
           // The prefilter replaces the GPU texture in place. Bind neither sky nor IBL
           // until it completes, so WebGPU never caches a view of the released input.
+          if (scene.isDisposed) {
+            reject(Error('Scene disposed.'));
+            return;
+          }
           const skyView = tex.clone() as HDRCubeTexture;
           skyView.coordinatesMode = Texture.SKYBOX_MODE;
           resolve({ tex, skyView });
@@ -147,8 +205,12 @@ export function lighting(scene: Scene, software: boolean) {
     selected = w;
     const wet = w === 'damp', plate = skies[w] ??= loadSky(w);
     scene.addPendingData(plate);
-    const { tex, skyView } = await plate.finally(() => scene.removePendingData(plate));
-    if (selected !== w || scene.isDisposed) return;
+    const loaded = await plate.catch((e: unknown) => {
+      if (skies[w] === plate) delete skies[w];
+      if (selected === w && !scene.isDisposed) throw e;
+    }).finally(() => scene.removePendingData(plate));
+    if (!loaded || selected !== w || scene.isDisposed) return;
+    const { tex, skyView } = loaded;
     // Peak luminance measured in the two decoded HDR cubemaps. Apply the
     // same rotation to illumination and sky so the dry sun sits at 16°.
     const source = wet ? new Vector3(0.37825, 0.73917, 0.55727) : new Vector3(0.61552, 0.13645, 0.77622);

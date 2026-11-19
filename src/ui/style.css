@@ -707,6 +707,8 @@
   margin-top: 12px;
 }
 .ax-finish {
+  display: flex;
+  flex-direction: column;
   width: min(470px, 100%);
 }
 .ax-finish-summary {
@@ -728,7 +730,6 @@
   color: #f0dfba;
 }
 .ax-result-scroll {
-  max-height: 41vh;
   overflow: auto;
 }
 .ax-finish table {

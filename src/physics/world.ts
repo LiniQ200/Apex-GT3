@@ -3,6 +3,7 @@ import type Jolt from 'jolt-physics/wasm-compat';
 import type { Circuit, CollisionMesh, Driver, RaceState } from '../types';
 
 export const STEP = 1 / 120;
+export const factoryAssists = { tc: 3, abs: 2 } as const;
 export const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 export const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 export interface Controls {
@@ -231,12 +232,13 @@ export async function createWorld(circuit: Circuit, meshes: CollisionMesh[]) {
     }
     c.shiftCut = Math.max(0, c.shiftCut - STEP);
     const slip = Math.max(c.wheels[2].mLongitudinalSlip, c.wheels[3].mLongitudinalSlip);
-    d.tcActive = state.tc > 0 && speed > 4 && input.throttle > 0.1 && slip > 0.28 - 0.025 * state.tc;
+    const { tc, abs } = d.id === 0 ? state : factoryAssists;
+    d.tcActive = tc > 0 && speed > 4 && input.throttle > 0.1 && slip > 0.28 - 0.025 * tc;
     d.absActive =
-      state.abs > 0 &&
+      abs > 0 &&
       speed > 3 &&
       input.brake > 0.2 &&
-      c.wheels.some((w) => w.mLongitudinalSlip > 0.32 - 0.05 * state.abs);
+      c.wheels.some((w) => w.mLongitudinalSlip > 0.32 - 0.05 * abs);
     d.throttle = input.throttle * (c.shiftCut > 0 ? 0 : d.tcActive ? 0.68 : 1);
     d.brake = input.brake * (d.absActive ? 0.72 : 1);
     const target = clamp(input.right, -1, 1);

@@ -1,7 +1,12 @@
 import type { RaceState } from './types';
 import { clamp, type Controls } from './physics/world';
 
-export function controls(canvas: HTMLCanvasElement, state: RaceState, command: (key: string) => void) {
+export function controls(
+  canvas: HTMLCanvasElement,
+  state: RaceState,
+  command: (key: string) => void,
+  onInterrupt?: () => void,
+) {
   const keys = new Set<string>(),
     mapped = [
       'KeyW',
@@ -26,18 +31,35 @@ export function controls(canvas: HTMLCanvasElement, state: RaceState, command: (
   let lastRumble = 0,
     previousYaw = 0,
     headingRate = 0,
-    lastButtons: boolean[] = [];
+    padsDenied = false,
+    syncButtons = false;
+  const lastButtons: boolean[] = [];
+  const driving = () => state.phase === 'race' || state.phase === 'lights';
+  function activePad() {
+    if (padsDenied) return;
+    try {
+      for (const pad of navigator.getGamepads?.() ?? []) if (pad?.connected) return pad;
+    } catch (e) {
+      // Permissions Policy is fixed for this document. Don't throw (and emit a
+      // browser policy violation) on every frame in a keyboard-only embed.
+      if (e instanceof DOMException && e.name === 'SecurityError') padsDenied = true;
+    }
+  }
   function keydown(e: KeyboardEvent) {
     if (
       !mapped.includes(e.code) ||
       e.ctrlKey ||
       e.metaKey ||
       e.altKey ||
+      e.defaultPrevented ||
+      document.hidden ||
+      (e.target instanceof HTMLElement &&
+        (e.target.isContentEditable || e.target.matches('input,select,textarea'))) ||
       document.querySelector('dialog[open]')
     )
       return;
-    if (state.phase === 'garage' && e.code !== 'KeyM') return;
-    if (state.phase === 'paused' && e.code !== 'Escape') return;
+    if (!driving() && e.code !== (state.phase === 'paused' ? 'Escape' : 'KeyM')) return;
+    if (e.code === 'Space' && e.target instanceof HTMLButtonElement) return;
     e.preventDefault();
     keys.add(e.code);
     if (!e.repeat) command(e.code);
@@ -47,15 +69,28 @@ export function controls(canvas: HTMLCanvasElement, state: RaceState, command: (
   }
   function clear() {
     keys.clear();
+    previousYaw = state.drivers[0]?.yaw ?? 0;
+    headingRate = 0;
+    syncButtons = true;
   }
+  function interrupt() {
+    clear();
+    onInterrupt?.();
+  }
+  const visibility = () => {
+    if (document.hidden) interrupt();
+  };
+  const focusCanvas = () => canvas.focus();
   window.addEventListener('keydown', keydown);
   window.addEventListener('keyup', keyup);
-  window.addEventListener('blur', clear);
-  canvas.addEventListener('pointerdown', () => canvas.focus());
+  window.addEventListener('blur', interrupt);
+  document.addEventListener('visibilitychange', visibility);
+  canvas.addEventListener('pointerdown', focusCanvas);
   const button = (pad: Gamepad | undefined, i: number) => pad?.buttons[i]?.value ?? 0;
   function sample(dt: number): Controls {
-    const pad = Array.from(navigator.getGamepads?.() ?? []).find((p): p is Gamepad => !!p),
-      d = state.drivers[0];
+    const focused = !document.hidden && document.hasFocus();
+    const pad = focused && (driving() || state.phase === 'paused') ? activePad() : undefined;
+    const blocked = !focused || (pad && !!document.querySelector('dialog[open]'));
     if (pad) {
       for (const [i, code] of [
         [9, 'Escape'],
@@ -65,10 +100,14 @@ export function controls(canvas: HTMLCanvasElement, state: RaceState, command: (
         [8, 'KeyR'],
       ] as const) {
         const pressed = button(pad, i) > 0.5;
-        if (pressed && !lastButtons[i]) command(code);
+        if (!blocked && !syncButtons && pressed && !lastButtons[i] && (driving() || code === 'Escape'))
+          command(code);
         lastButtons[i] = pressed;
       }
-    }
+      syncButtons = false;
+    } else lastButtons.length = 0;
+    if (blocked || !driving()) return { throttle: 0, brake: 0, right: 0, handbrake: 0, draft: 0 };
+    const d = state.drivers[0];
     const analog = pad?.axes[0] ?? 0,
       key =
         Number(keys.has('KeyD') || keys.has('ArrowRight')) -
@@ -81,7 +120,7 @@ export function controls(canvas: HTMLCanvasElement, state: RaceState, command: (
       sens = 1 / (1 + d.speed * 0.043);
     const right = demand * sens - (demand === 0 ? headingRate * Math.min(0.14, d.speed * 0.004) : 0);
     if (
-      pad?.vibrationActuator &&
+      typeof pad?.vibrationActuator?.playEffect === 'function' &&
       state.phase === 'race' &&
       performance.now() - lastRumble > 120 &&
       (d.surface === 'kerb' || d.absActive)
@@ -107,10 +146,14 @@ export function controls(canvas: HTMLCanvasElement, state: RaceState, command: (
     sample,
     lookBack: () => keys.has('KeyB'),
     clear,
+    interrupt,
     dispose() {
+      clear();
       window.removeEventListener('keydown', keydown);
       window.removeEventListener('keyup', keyup);
-      window.removeEventListener('blur', clear);
+      window.removeEventListener('blur', interrupt);
+      document.removeEventListener('visibilitychange', visibility);
+      canvas.removeEventListener('pointerdown', focusCanvas);
     },
   };
 }

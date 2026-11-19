@@ -1,3 +1,4 @@
+import { raceOrder, SPRINT_LAPS } from '../physics/race';
 import { defaults, teams, type Circuit, type RaceState, type Settings, type UiActions } from '../types';
 import { circuitGraphic, icon, insignia } from './graphics';
 import { clock, createHud } from './hud';
@@ -74,7 +75,7 @@ export function createUI(
   <div class="ax-overlay" data-section="paused" hidden><section class="ax-modal ax-pause"><div class="ax-strap"><i></i> RACE CONTROL / PIT WALL</div><h2>Session paused</h2><div class="ax-rule"></div><div class="ax-fields">${select('transmission', 'Gearbox')}${select('graphics', 'Graphics')}</div>
     <div class="ax-tune-rows"><button data-action="cycleTc">Traction control <b data-tc></b>${icon('angle')}</button><button data-action="cycleAbs">Anti-lock braking <b data-abs></b>${icon('angle')}</button><button data-action="toggleMute">Race audio <b data-audio></b>${icon('angle')}</button></div>
     <button class="ax-primary" data-action="resume">RESUME SESSION ${icon('arrow')}</button><div class="ax-modal-foot"><button data-action="restart">Restart race</button><button data-action="garage">Return to garage</button><button data-help>Controls</button></div></section></div>
-  <div class="ax-overlay" data-section="finished" hidden><section class="ax-modal ax-finish"><div class="ax-strap"><i></i> CHEQUERED FLAG / OFFICIAL RESULT</div><h2>Final classification</h2><div class="ax-finish-summary"><span>YOUR FINISH <b data-finish-place></b></span><span>BEST LAP <b data-finish-lap></b></span></div><div class="ax-result-scroll"><table><thead><tr><th>POS</th><th>DRIVER</th><th>NO.</th><th>DISTANCE</th></tr></thead><tbody></tbody></table></div><button class="ax-primary" data-action="restart">RACE AGAIN ${icon('arrow')}</button><div class="ax-modal-foot"><button data-action="garage">Return to garage</button></div></section></div>
+  <div class="ax-overlay" data-section="finished" hidden><section class="ax-modal ax-finish"><div class="ax-strap"><i></i> CHEQUERED FLAG / AT YOUR FINISH</div><h2>Race classification</h2><div class="ax-finish-summary"><span>YOUR FINISH <b data-finish-place></b></span><span>BEST LAP <b data-finish-lap></b></span></div><div class="ax-result-scroll"><table><thead><tr><th>POS</th><th>DRIVER</th><th>NO.</th><th>TIME / STATUS</th></tr></thead><tbody></tbody></table></div><button class="ax-primary" data-action="restart">RACE AGAIN ${icon('arrow')}</button><div class="ax-modal-foot"><button data-action="garage">Return to garage</button></div></section></div>
   <dialog class="ax-modal ax-help"><div class="ax-help-head"><div class="ax-strap"><i></i> DRIVING MANUAL</div><button data-close aria-label="Close controls">${icon('close')}</button></div><h2>Driver controls</h2><dl>${controls.map(([k, v]) => `<div><dt><kbd>${k}</kbd></dt><dd>${v}</dd></div>`).join('')}</dl><p>Keyboard or connected gamepad.</p><button data-close class="ax-primary">BACK ${icon('arrow')}</button></dialog>`;
 
   const sections = Object.fromEntries(
@@ -155,18 +156,19 @@ export function createUI(
     query('[data-race-distance]').textContent = settings.mode === 'sprint' ? '03 LAPS' : 'HOTLAP';
   }
   function classification(s: RaceState) {
-    const drivers = [...s.drivers].sort((a, b) => b.distance - a.distance || a.id - b.id);
+    const drivers = raceOrder(s.drivers), winnerTime = drivers[0].finishTime;
     const body = root.querySelector('tbody')!;
     body.replaceChildren();
     drivers.forEach((d, i) => {
       const row = body.insertRow();
       if (d.id === 0) row.className = 'is-player';
-      for (const v of [
-        String(i + 1).padStart(2, '0'),
-        d.id === 0 ? 'YOU' : d.name,
-        d.number,
-        `${(Math.max(0, d.distance) / 1000).toFixed(2)} km`,
-      ])
+      const down = SPRINT_LAPS - d.completedLaps;
+      let result: string;
+      if (d.finishTime === null) result = `Running · ${d.completedLaps}/${SPRINT_LAPS} laps`;
+      else if (down) result = `+${down} lap${down === 1 ? '' : 's'}`;
+      else if (i && winnerTime !== null) result = `+${(d.finishTime - winnerTime).toFixed(3)} s`;
+      else result = clock(d.finishTime);
+      for (const v of [String(i + 1).padStart(2, '0'), d.id === 0 ? 'YOU' : d.name, d.number, result])
         row.insertCell().textContent = v;
     });
     query('[data-finish-place]').textContent = `P${drivers.findIndex((d) => d.id === 0) + 1}`;

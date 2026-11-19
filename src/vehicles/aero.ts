@@ -182,6 +182,8 @@ export function aero(
     wingZ = -1.93;
   const rear = s.hubs[2].z + s.radii[2] + 0.16,
     front = s.hubs[0].z - s.radii[0] - 0.04;
+  // The 458 bumper tapers in sooner. Extend only the canards' mounting edges into its skin.
+  const canardInset = s.source === '458' ? 0.09 : 0;
   // Splitter planform recedes at the corners of the rounded nose. Keep these
   // panels at homologated 75 mm clearance, above the ground shadow.
   carbon.plate(0.075, 0.035, [
@@ -257,11 +259,11 @@ export function aero(
       const z = 2.0 - i * 0.09,
         y = 0.235 + i * 0.093;
       const a: Point[] = [
-        [side * 0.8, y, z + 0.13],
+        [side * (0.8 - canardInset), y, z + 0.13],
         [side * 0.91, y + 0.012, z + 0.04],
         [side * 0.99, y + 0.025, z - 0.09],
         [side * 0.934, y + 0.029, z - 0.16],
-        [side * 0.82, y + 0.012, z - 0.062],
+        [side * (0.82 - canardInset), y + 0.012, z - 0.062],
       ];
       carbon.loft(
         a,

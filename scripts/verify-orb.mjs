@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 const url =
   process.env.QA_URL ?? JSON.parse(await readFile('.amp/portals/gt3-sim.json', 'utf8')).links[0].url;
 const full = process.argv.includes('--full-profile'),
-  gpu = process.argv.includes('--webgpu') || full,
-  dir = full ? 'qa-artifacts/full-profile' : gpu ? 'qa-artifacts/webgpu' : 'qa-artifacts';
+  gpu = process.argv.includes('--webgpu') || (full && !process.argv.includes('--webgl2')),
+  dir = full ? `qa-artifacts/full-profile${gpu ? '' : '-webgl2'}` : gpu ? 'qa-artifacts/webgpu' : 'qa-artifacts';
 await mkdir(dir, { recursive: true });
 const args = [
   '--use-gl=angle',
@@ -24,10 +24,17 @@ const browser = await chromium.launch({ args }),
 if (!gpu) await context.addInitScript(() => Object.defineProperty(navigator, 'gpu', { value: undefined }));
 // Opt into the same profile as a desktop card without changing the renderer
 // or faking its limits. This checks production shaders, never hardware FPS.
-if (full)
+if (full && gpu)
   await context.addInitScript(() => {
     for (const k of ['description', 'architecture'])
       Object.defineProperty(GPUAdapterInfo.prototype, k, { get: () => 'desktop-profile-test' });
+  });
+if (full && !gpu)
+  await context.addInitScript(() => {
+    const original = WebGL2RenderingContext.prototype.getParameter;
+    WebGL2RenderingContext.prototype.getParameter = function (parameter) {
+      return parameter === 0x9246 ? 'desktop-profile-test' : original.call(this, parameter);
+    };
   });
 const page = await context.newPage();
 page.setDefaultTimeout(120000);
@@ -51,7 +58,9 @@ page.on('console', (m) => {
   } else if (m.type() === 'warning') console.log('console.warn', m.text().slice(0, 240));
 });
 page.on('response', (r) => {
-  const path = new URL(r.url()).pathname;
+  const { pathname: path, protocol, origin } = new URL(r.url());
+  if ((protocol === 'https:' || protocol === 'http:') && origin !== new URL(url).origin)
+    faults.push(`unexpected runtime download: ${origin}${path}`);
   if (r.status() >= 400) {
     faults.push(`${r.status()} ${path}`);
     console.log(faults.at(-1));
@@ -114,18 +123,19 @@ try {
   const garage = await state();
   assert.equal(garage.backend, gpu ? 'WebGPU' : 'WebGL2');
   await shot('01-garage-showroom');
-  if (gpu) {
+  if (gpu || full) {
     await page.goto(new URL('?autostart=1&qa=1', url).href);
     await ready('race');
-    assert.equal((await state()).backend, 'WebGPU');
+    assert.equal((await state()).backend, garage.backend);
     if (full) assert.equal((await state()).software, false);
-    await shot('webgpu-grid');
+    const name = garage.backend.toLowerCase();
+    await shot(`${name}-grid`);
     if (full) {
       await page.evaluate(() => {
         window.__GT3_DEBUG__.setWeather('damp');
         window.__GT3_DEBUG__.setCamera('hood');
       });
-      await shot('webgpu-damp');
+      await shot(`${name}-damp`);
       await page.keyboard.press('Escape');
       await ready('paused');
       for (const quality of ['balanced', 'ultra']) {
@@ -135,7 +145,7 @@ try {
       }
       await page.getByRole('button', { name: 'Resume session' }).click();
       await ready('race');
-      await shot('webgpu-ultra');
+      await shot(`${name}-ultra`);
     }
   } else {
     // Record real input on the live garage, including a neighbour on either side of the chosen swatch.
@@ -183,6 +193,8 @@ try {
     let s = await state();
     assert.equal(s.drivers.length, 10);
     await page.evaluate(() => window.__GT3_DEBUG__.freeze(true));
+    await page.keyboard.press('r');
+    assert.ok(Math.abs((await state()).drivers[0].d + 2.8) < 0.01, 'reset during lights must keep the grid box');
     await page.keyboard.press('Escape');
     assert.equal((await state()).phase, 'paused');
     await page.getByRole('button', { name: 'Resume session' }).click();
@@ -226,17 +238,21 @@ try {
       const d = window.__GT3_DEBUG__;
       let s = d.getState(),
         min = 1,
-        max = 0;
+        max = 0,
+        brakingInTurnOne = false;
       for (let i = 0; i < 2400; i++) {
         d.step(1);
         s = d.getState();
         min = Math.min(min, ...s.wheelCompressionM);
         max = Math.max(max, ...s.wheelCompressionM);
-        if (s.elapsed >= 17.5 && s.drivers[0].brake > 0.1 && s.maxBrakeTempC >= 320) break;
+        const p = s.drivers[0];
+        brakingInTurnOne = p.s >= 660 && p.s < 705 && p.brake > 0.1 && Math.max(...p.brakeTempC) >= 320;
+        if (brakingInTurnOne) break;
       }
       return {
         min,
         max,
+        brakingInTurnOne,
         elapsed: s.elapsed,
         temperature: s.maxBrakeTempC,
         peak: s.peakSpeedKmh,
@@ -244,6 +260,7 @@ try {
         nan: s.nanDetected,
       };
     });
+    assert.ok(soak.brakingInTurnOne, 'did not capture the player braking at the Turn 1 camera');
     await shot('05-turn1-braking-glow');
     console.log('autopilot', soak);
     assert.ok(
@@ -251,10 +268,50 @@ try {
       JSON.stringify(soak),
     );
     assert.ok(soak.min > 0.005 && soak.max < 0.22, JSON.stringify(soak));
+    // The first cold-disc stop needn't glow in daylight. Photograph a warm stop
+    // from the side on lap two without changing the temperature or the camera.
+    const warmStop = await page.evaluate(() => {
+      const d = window.__GT3_DEBUG__;
+      for (let i = 0; i < 30 && d.getState().lap === 1; i++) d.step(600);
+      for (let i = 0; i < 80 && d.getState().drivers[0].s < 640; i++) d.step(45);
+      for (let i = 0; i < 700; i++) {
+        const s = d.getState(), p = s.drivers[0];
+        if (s.lap !== 2 || p.s > 695) break;
+        if (p.s >= 675 && p.brake > 0.1 && Math.min(...p.brakeTempC.slice(0, 2)) > 600) return true;
+        d.step(1);
+      }
+      return false;
+    });
+    assert.ok(warmStop, 'did not reach a warm braking application at Turn 1');
+    await shot('05b-warm-turn1-discs');
+    const finish = await page.evaluate(() => {
+      const d = window.__GT3_DEBUG__;
+      for (let n = 0; n < 48 && d.getState().phase === 'race'; n++) d.step(1200);
+      return d.getState();
+    });
+    assert.equal(finish.phase, 'finished');
+    const results = page.locator('[data-section="finished"]');
+    await results.waitFor({ state: 'visible' });
+    assert.equal(await results.locator('tbody tr').count(), 10);
+    const place = await results.locator('tr.is-player td').first().innerText();
+    assert.equal(await results.locator('[data-finish-place]').innerText(), `P${Number(place)}`);
+    assert.ok(await results.locator('.ax-result-scroll').evaluate(el => el.scrollHeight <= el.clientHeight + 1),
+      'all ten result rows should fit at 1280×720 without scrolling');
+    await page.screenshot({ path: `${dir}/06-classification.png` });
+    await page.setViewportSize({ width: 740, height: 400 });
+    const lastRow = results.locator('tbody tr').last();
+    await lastRow.scrollIntoViewIfNeeded();
+    assert.ok(await lastRow.evaluate(row => {
+      const b = row.getBoundingClientRect(), list = row.closest('.ax-result-scroll').getBoundingClientRect();
+      return b.top >= list.top - 1 && b.bottom <= list.bottom + 1;
+    }), 'the last driver must be reachable on a short screen');
+    assert.ok(await results.locator('[data-action="garage"]').evaluate(el => el.getBoundingClientRect().bottom <= innerHeight),
+      'result actions must stay on screen while scrolling the field');
+    await page.screenshot({ path: `${dir}/06b-compact-classification.png` });
     await writeFile(
       `${dir}/telemetry.json`,
       JSON.stringify(
-        { url, adapter: garage.adapter, soak, frames, assets: [...assets].sort(), faults },
+        { url, adapter: garage.adapter, soak, frames, classification: await results.locator('tbody').innerText(), assets: [...assets].sort(), faults },
         null,
         2,
       ),

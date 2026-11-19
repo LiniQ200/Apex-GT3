@@ -20,3 +20,4 @@ The asset manifest lists the exact downloaded sources: /assets/manifest.json
 
 Barlow Condensed by Jeremy Tribby — SIL Open Font License 1.1.
 Draco by Google — Apache 2.0. Babylon.js — Apache 2.0. Jolt Physics — MIT.
+Full license texts and upstream notices: /assets/third-party-notices.txt

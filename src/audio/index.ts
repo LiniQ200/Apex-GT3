@@ -41,6 +41,16 @@ export function createAudio(): AudioRig {
   let ctx: AudioContext | undefined, graph: Graph | undefined;
   let update: ReturnType<typeof mixer> | undefined,
     disposed = false;
+  function release() {
+    update = undefined;
+    try {
+      graph?.stop();
+    } finally {
+      if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {});
+      ctx = undefined;
+      graph = undefined;
+    }
+  }
   return {
     unlock() {
       if (disposed || typeof window === 'undefined') return;
@@ -58,10 +68,7 @@ export function createAudio(): AudioRig {
         }
       } catch {
         // Unsupported/busy audio devices must not prevent a race from starting.
-        if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {});
-        ctx = undefined;
-        graph = undefined;
-        update = undefined;
+        release();
       }
     },
     update(state) {
@@ -69,13 +76,7 @@ export function createAudio(): AudioRig {
     },
     dispose() {
       disposed = true;
-      update = undefined;
-      if (ctx && ctx.state !== 'closed') {
-        graph?.stop();
-        void ctx.close().catch(() => {});
-      }
-      graph = undefined;
-      ctx = undefined;
+      release();
     },
   };
 }

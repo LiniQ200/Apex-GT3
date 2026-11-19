@@ -5,12 +5,13 @@ import jpeg from 'jpeg-js';
 
 const root = 'public/assets/',
   ua = { 'User-Agent': 'AmpGT3Sim/1.0' },
+  procedural = 'procedural fallback',
   assets = {};
 const previous = JSON.parse(await readFile(root + 'manifest.json', 'utf8').catch(() => '{}')).assets ?? {};
 const sha = (b) => createHash('sha256').update(b).digest('hex');
-async function cached(path) {
+async function cached(path, skipSource) {
   const old = previous[path];
-  if (!old) return false;
+  if (!old || old.source === skipSource) return false;
   const b = await readFile(root + path).catch(() => null);
   if (!b || sha(b) !== old.sha256) return false;
   assets[path] = old;
@@ -36,10 +37,11 @@ async function request(url) {
   }
   throw err;
 }
-async function model(name, urls, local, backup) {
+async function model(name, sources, substitute) {
   const path = `models/${name}.glb`;
-  if (await cached(path)) return;
-  for (const p of [local, ...urls, backup].filter(Boolean)) {
+  if (await cached(path, substitute)) return;
+  for (const p of substitute ? [...sources, substitute] : sources) {
+    if (p === substitute && (await cached(path))) return;
     try {
       const b = p.startsWith('https:') ? await request(p) : await readFile(p);
       if (b.toString('ascii', 0, 4) !== 'glTF' || b.readUInt32LE(8) !== b.length)
@@ -137,7 +139,7 @@ async function haven(set, slugs, sky = false) {
   const keys = sky ? ['hdr'] : ['diff', 'rough', 'nor_gl', 'ao'];
   const path = (k) => (sky ? `skies/${set}.hdr` : `${set}/${k}.jpg`);
   let missing = [];
-  for (const k of keys) if (!(await cached(path(k)))) missing.push(k);
+  for (const k of keys) if (!(await cached(path(k), procedural))) missing.push(k);
   for (const slug of slugs) {
     if (!missing.length) break;
     try {
@@ -164,25 +166,22 @@ async function haven(set, slugs, sky = false) {
       console.warn(String(e));
     }
   }
-  for (const k of missing)
-    await save(
-      path(k),
-      sky ? fallbackSky(set === 'overcast_race') : fallbackTexture(set, k),
-      'procedural fallback',
-    );
+  for (const k of missing) {
+    // The download failed again; retain the verified fallback without rewriting it.
+    if (await cached(path(k))) continue;
+    await save(path(k), sky ? fallbackSky(set === 'overcast_race') : fallbackTexture(set, k), procedural);
+  }
 }
-await model(
-  'ferrari_base',
-  ['https://raw.githubusercontent.com/mrdoob/three.js/r180/examples/models/gltf/ferrari.glb'],
+await model('ferrari_base', [
   'node_modules/three/examples/models/gltf/ferrari.glb',
+  'https://raw.githubusercontent.com/mrdoob/three.js/r180/examples/models/gltf/ferrari.glb',
   'assets/offline/ferrari.glb',
-);
+]);
 await model(
   'car_concept_base',
   [
     'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/CarConcept/glTF-Binary/CarConcept.glb',
   ],
-  null,
   root + 'models/ferrari_base.glb',
 );
 await inspect();
@@ -209,6 +208,17 @@ await Promise.all([
   haven('kerb', ['painted_plaster_wall', 'concrete_floor_painted']),
   haven('terrain', ['aerial_grass_rock', 'coast_sand_rocks_02']),
 ]);
+const notices = [];
+for (const [name, file] of [
+  ['Babylon.js and included components', 'node_modules/@babylonjs/core/NOTICE.md'],
+  ['Babylon.js and Draco', 'node_modules/@babylonjs/core/assets/Draco/draco.license'],
+  ['Jolt Physics', 'node_modules/jolt-physics/LICENSE'],
+  ['three.js', 'node_modules/three/LICENSE'],
+  ['Barlow Condensed', 'src/ui/fonts/OFL.txt'],
+]) {
+  notices.push(`${name}\n\n${await readFile(new URL(`../${file}`, import.meta.url), 'utf8')}`);
+}
+await save('third-party-notices.txt', Buffer.from(notices.join('\n\n')), 'Package and font license files');
 await writeFile(
   root + 'manifest.json',
   JSON.stringify(

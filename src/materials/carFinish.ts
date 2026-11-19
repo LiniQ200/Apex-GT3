@@ -212,7 +212,8 @@ function sharedMaterials(scene: Scene) {
   const glass = pbr(scene, 'smoke laminated glass', '#8caeb9', 0.2, 0.12);
   glass.alpha = 0.43;
   glass.transparencyMode = PBRMaterial.PBRMATERIAL_ALPHABLEND;
-  glass.needDepthPrePass = true;
+  // Write depth in the blended draw; Babylon 9.0's separate prepass retains both shader variants.
+  glass.forceDepthWrite = true;
   const headlight = pbr(scene, 'projector arrays', '#f0f9ff', 0.2, 0.16);
   headlight.emissiveColor.set(1.75, 1.83, 2.05);
   const tire = pbr(scene, 'vulcanized slick', '#202124', 0, 0.82);

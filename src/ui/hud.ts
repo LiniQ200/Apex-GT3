@@ -1,3 +1,4 @@
+import { raceOrder, SPRINT_LAPS } from '../physics/race';
 import { teams, type Circuit, type Driver, type RaceState } from '../types';
 import { circuitGraphic, icon, insignia } from './graphics';
 
@@ -93,21 +94,23 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     best = [Infinity, Infinity, Infinity],
     previous = best.slice(),
     activeLap = 0,
-    lapStart = 0,
-    lastSplitColors = ['', '', ''],
-    recorded = [0, 0, 0];
+    lastSplitColors = ['', '', ''];
   function reset() {
     timing.clear();
     lastTime = -1;
     activeLap = 0;
-    lapStart = 0;
     lastSplitColors = ['', '', ''];
     best = [Infinity, Infinity, Infinity];
     previous = best.slice();
-    recorded = [0, 0, 0];
   }
+  const timedDistance = (d: Driver) => d.finishTime === null ? d.distance : d.completedLaps * circuit.length;
   function interval(lead: Driver, follow: Driver, elapsed: number) {
-    const m = Math.max(0, lead.distance - follow.distance);
+    if (follow.finishTime !== null) {
+      const laps = lead.completedLaps - follow.completedLaps;
+      if (laps > 0) return `+${laps}L`;
+      return lead.finishTime === null ? 'FLAG' : `+${(follow.finishTime - lead.finishTime).toFixed(2)}`;
+    }
+    const m = Math.max(0, timedDistance(lead) - follow.distance);
     if (m >= circuit.length) return `+${Math.floor(m / circuit.length)}L`;
     const timestamp = timing.get(lead.id)?.crossing(follow.distance);
     return timestamp == null ? `+${Math.round(m)}m` : `+${Math.max(0, elapsed - timestamp).toFixed(2)}`;
@@ -117,11 +120,11 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     if (!player) return;
     if (s.elapsed < lastTime) reset();
     lastTime = s.elapsed;
-    const order = [...s.drivers].sort((a, b) => b.distance - a.distance || a.id - b.id);
+    const order = raceOrder(s.drivers);
     for (const d of order) {
       let sensor = timing.get(d.id);
       if (!sensor) timing.set(d.id, (sensor = new Transponder()));
-      sensor.record(d.distance, s.elapsed);
+      sensor.record(timedDistance(d), d.finishTime ?? s.elapsed);
     }
     while (rows.length < order.length) {
       const li = document.createElement('li');
@@ -145,7 +148,7 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
       li.children[0].textContent = String(i + 1);
       num.textContent = d.number;
       name.textContent = d.id === 0 ? 'YOU' : d.name;
-      int.textContent = i ? interval(order[i - 1], d, s.elapsed) : 'LEADER';
+      int.textContent = i ? interval(order[i - 1], d, s.elapsed) : d.finishTime === null ? 'LEADER' : 'FLAG';
       let dot = dots.get(d.id);
       if (!dot) {
         dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -166,7 +169,7 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
       }
     const playerDot = dots.get(0);
     if (playerDot && markers.lastChild !== playerDot) markers.append(playerDot);
-    write('lap', s.settings.mode === 'sprint' ? `${two(s.lap)} / 03` : two(s.lap));
+    write('lap', s.settings.mode === 'sprint' ? `${two(s.lap)} / ${two(SPRINT_LAPS)}` : two(s.lap));
     write('clock', clock(s.lapTime));
     const hasBest = s.bestLap > 0 && Number.isFinite(s.bestLap);
     write('delta', hasBest ? `Δ ${s.delta >= 0 ? '+' : '−'}${Math.abs(s.delta).toFixed(3)}` : 'Δ —');
@@ -174,23 +177,14 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     deltaBar.style.left = s.delta >= 0 ? '50%' : 'auto';
     deltaBar.style.right = s.delta < 0 ? '50%' : 'auto';
     deltaBar.style.background = s.delta >= 0 ? '#efb251' : '#66dda7';
-    if (activeLap && s.lap !== activeLap) {
-      // The sim clears sectors with the lap increment. Recover the exact S3
-      // from the simulated lap clocks, not the last rendered frame's timestamp.
-      if (s.lap === activeLap + 1 && recorded[0] && recorded[1])
-        recorded[2] = Math.max(0, s.elapsed - s.lapTime - lapStart - recorded[0] - recorded[1]);
-      lastSplitColors = recorded.map((v, i) =>
-        !v ? '' : v < best[i] ? 'best' : v < previous[i] ? 'gain' : 'set',
-      );
-      previous = recorded.map((v, i) => v || previous[i]);
+    if (s.lap !== activeLap && s.lastSectors.length) {
+      lastSplitColors = s.lastSectors.map((v, i) => v < best[i] ? 'best' : v < previous[i] ? 'gain' : 'set');
+      previous = s.lastSectors;
       best = previous.map((v, i) => Math.min(best[i], v));
-      recorded = [0, 0, 0];
     }
     activeLap = s.lap;
-    lapStart = s.elapsed - s.lapTime;
     sectorNodes.forEach((n, i) => {
       const v = s.sectors[i] || 0;
-      if (v > 0 && Number.isFinite(v)) recorded[i] = v;
       const hold = !v && activeLap > 1 && s.lapTime < 4 && !!lastSplitColors[i];
       n.dataset.split = hold
         ? lastSplitColors[i]
