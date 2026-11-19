@@ -1,0 +1,9 @@
+services:
+  gt3-sim:
+    command: npm run preview
+    health: /
+    review: false
+    portal:
+      url: /
+      title: APEX GT3 // WebGPU Sim
+      description: Configure a car in the garage and start a three-lap sprint at Valle d'Oro.

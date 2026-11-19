@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+time npm install --no-audit --no-fund --prefer-offline
+if ! node --input-type=module -e "import {chromium} from 'playwright';import {accessSync} from 'node:fs';accessSync(chromium.executablePath())" 2>/dev/null; then
+  npx playwright install --with-deps chromium || npx playwright install chromium
+fi
+time npm run fetch:assets
+time npm run build

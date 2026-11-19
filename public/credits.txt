@@ -1,0 +1,22 @@
+APEX GT3 // WEBGPUSIM — asset credits
+
+Ferrari 458 Italia by vicent091036
+https://sketchfab.com/models/57bf6cc56931426e87494f554df1dab6
+Distributed with the three.js car materials example:
+https://github.com/mrdoob/three.js/tree/r180/examples/models/gltf
+Creative Commons Attribution 4.0: https://creativecommons.org/licenses/by/4.0/
+
+Car Concept, © 2024 Darmstadt Graphics Group GmbH. Model and textures by
+Eric Chadwick, based on a public-domain model by Unity Fan. CC BY 4.0.
+Khronos Group retains its marks. Full upstream attribution:
+https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/CarConcept
+
+Both vehicles are adapted in-game: reduced geometry, scale and wheel rigs,
+race liveries, aero, glass, cockpit details and lights. This fictional venue
+and its cars are not FIA homologated or endorsed by the named manufacturers.
+
+HDRIs and PBR textures: Poly Haven (CC0), https://polyhaven.com/license
+The asset manifest lists the exact downloaded sources: /assets/manifest.json
+
+Barlow Condensed by Jeremy Tribby — SIL Open Font License 1.1.
+Draco by Google — Apache 2.0. Babylon.js — Apache 2.0. Jolt Physics — MIT.

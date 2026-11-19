@@ -1,0 +1,349 @@
+import type { Scene } from '@babylonjs/core/scene';
+import { Color3 } from '@babylonjs/core/Maths/math.color';
+import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
+import { Texture } from '@babylonjs/core/Materials/Textures/texture';
+import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture';
+import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
+import type { Circuit, Weather } from '../types';
+import { groove } from './circuit';
+
+export function randomSource(seed: number) {
+  return () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+}
+export function plain(scene: Scene, name: string, roughness = 0.8, metallic = 0) {
+  const m = new PBRMaterial('venue.' + name, scene);
+  m.roughness = roughness;
+  m.metallic = metallic;
+  return m;
+}
+function mapped(scene: Scene, name: string) {
+  const m = plain(scene, name),
+    map = (part: string) => {
+      const t = new Texture(`/assets/${name}/${part}.jpg`, scene);
+      t.gammaSpace = part === 'diff';
+      t.anisotropicFilteringLevel = 8;
+      return t;
+    };
+  m.albedoTexture = map('diff');
+  m.bumpTexture = map('nor_gl');
+  m.bumpTexture.level = 0.52;
+  m.metallicTexture = map('rough');
+  m.useRoughnessFromMetallicTextureAlpha = false;
+  m.useRoughnessFromMetallicTextureGreen = true;
+  m.ambientTexture = map('ao');
+  m.ambientTextureStrength = 0.55;
+  m.roughness = 1;
+  return m;
+}
+
+function aggregate(scene: Scene) {
+  const n = 128,
+    rand = randomSource(4241),
+    height = Float32Array.from({ length: n * n }, rand),
+    data = new Uint8Array(n * n * 4);
+  for (let y = 0; y < n; y++)
+    for (let x = 0; x < n; x++) {
+      const i = y * n + x,
+        h = height[i];
+      data[4 * i] = 105 + h * 44;
+      data[4 * i + 1] = 128 + 46 * (height[((y + 1) % n) * n + x] - h);
+      data[4 * i + 2] = 109 + 36 * h;
+      data[4 * i + 3] = 128 + 46 * (height[y * n + ((x + 1) % n)] - h);
+    }
+  const t = RawTexture.CreateRGBATexture(data, n, n, scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+  t.name = '28× stone aggregate';
+  t.uScale = t.vScale = 28;
+  t.wrapU = t.wrapV = Texture.WRAP_ADDRESSMODE;
+  t.gammaSpace = false;
+  return t;
+}
+
+function wearMap(scene: Scene, c: Circuit) {
+  const w = 2048,
+    h = 4096,
+    t = new DynamicTexture(
+      'continuous lap wear — UV2',
+      { width: w, height: h },
+      scene,
+      true,
+      Texture.TRILINEAR_SAMPLINGMODE,
+    );
+  const ctx = t.getContext() as CanvasRenderingContext2D,
+    rand = randomSource(41);
+  const stationX = (s: number, offset: number) => {
+    const p = c.at(s);
+    return (0.5 + (groove(p) + offset) / (2 * p.halfWidth)) * w;
+  };
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, w, h);
+  // Multiple narrow profiles instead of a painted black centre stripe. V spans the
+  // whole lap once; all higher-frequency stone maps remain on metric UV1.
+  for (let y = 0; y < h; y += 3) {
+    const p = c.at((y / h) * c.length),
+      x = stationX(p.s, 0),
+      r = (w / p.halfWidth) * 1.48;
+    const grad = ctx.createLinearGradient(x - r, 0, x + r, 0);
+    for (const [u, v] of [
+      [0, 255],
+      [0.15, 237],
+      [0.32, 204],
+      [0.39, 185],
+      [0.47, 201],
+      [0.58, 192],
+      [0.67, 180],
+      [0.82, 225],
+      [1, 255],
+    ])
+      grad.addColorStop(u, `rgb(${v},${v},${v})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, y, w, 3);
+  }
+  for (const apex of [697, 1695, 2490, 2840])
+    for (let pass = 0; pass < 30; pass++) {
+      const s0 = apex - 155 + rand() * 119,
+        dist = 15 + rand() * 55,
+        off = (rand() - 0.5) * 3.2,
+        sway = (rand() - 0.5) * 0.83;
+      for (const tire of [-0.81, 0.81]) {
+        ctx.strokeStyle = `rgba(28,29,29,${0.08 + rand() * 0.17})`;
+        ctx.lineWidth = 5 + rand() * 19;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let j = 0; j <= 12; j++) {
+          const u = j / 12,
+            s = s0 + u * dist,
+            x = stationX(s, off + tire + sway * u * u);
+          if (j) ctx.lineTo(x, (s / c.length) * h);
+          else ctx.moveTo(x, (s / c.length) * h);
+        }
+        ctx.stroke();
+      }
+    }
+  // A few launch marks end just after the grid in both rows.
+  for (let i = 0; i < 10; i++)
+    for (const k of [-0.78, 0.78]) {
+      const p = c.at(i * 6),
+        x = (0.5 + ((i % 2 ? 2.8 : -2.8) + k) / (2 * p.halfWidth)) * w;
+      ctx.fillStyle = 'rgba(30,30,30,.35)';
+      ctx.fillRect(x - 7, (p.s / c.length) * h, 14, 7 + rand() * 14);
+    }
+  t.coordinatesIndex = 1;
+  t.gammaSpace = false;
+  t.wrapV = Texture.WRAP_ADDRESSMODE;
+  t.anisotropicFilteringLevel = 4;
+  t.update(false);
+  return t;
+}
+function waterMap(scene: Scene) {
+  const w = 256,
+    h = 1024,
+    t = new DynamicTexture(
+      'damp pockets — UV2',
+      { width: w, height: h },
+      scene,
+      true,
+      Texture.TRILINEAR_SAMPLINGMODE,
+    ),
+    ctx = t.getContext() as CanvasRenderingContext2D;
+  const rand = randomSource(915);
+  ctx.fillStyle = '#4bfa00';
+  ctx.fillRect(0, 0, w, h);
+  for (let j = 0; j < 220; j++) {
+    const x = rand() * w,
+      y = rand() * h;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(8 + rand() * 30, 1 + rand() * 5);
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    g.addColorStop(0, 'rgba(255,72,0,.99)');
+    g.addColorStop(1, 'rgba(255,72,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(-1, -1, 2, 2);
+    ctx.restore();
+  }
+  t.coordinatesIndex = 1;
+  t.gammaSpace = false;
+  t.update(false);
+  return t;
+}
+
+export function roadMaterials(scene: Scene, c: Circuit) {
+  const road = mapped(scene, 'asphalt'),
+    grass = mapped(scene, 'terrain'),
+    kerb = mapped(scene, 'kerb'),
+    concrete = mapped(scene, 'concrete');
+  road.lightmapTexture = wearMap(scene, c);
+  road.useLightmapAsShadowmap = true;
+  road.detailMap.texture = aggregate(scene);
+  road.detailMap.diffuseBlendLevel = 0.26;
+  road.detailMap.bumpLevel = 0.36;
+  road.detailMap.roughnessBlendLevel = 0.22;
+  road.detailMap.isEnabled = true;
+  road.clearCoat.texture = waterMap(scene);
+  road.clearCoat.useRoughnessFromMainTexture = true;
+  road.clearCoat.indexOfRefraction = 1.333;
+  grass.albedoColor = new Color3(0.49, 0.89, 0.61);
+  grass.bumpTexture!.level = 0.5;
+  // Raked gravel uses local neutral aggregate rather than green terrain albedo.
+  const gravel = plain(scene, 'pozzolana');
+  gravel.albedoTexture = concrete.albedoTexture;
+  gravel.bumpTexture = grass.bumpTexture;
+  gravel.albedoColor = new Color3(0.96, 0.77, 0.53);
+  gravel.ambientTexture = grass.ambientTexture;
+  gravel.roughness = 1;
+  const paint = plain(scene, 'track enamel', 0.68),
+    wall = plain(scene, 'galvanised rail', 0.46, 0.55);
+  wall.albedoColor = new Color3(0.92, 0.92, 0.9);
+  wall.bumpTexture = concrete.bumpTexture;
+  wall.bumpTexture!.level = 0.17;
+  const setWeather = (w: Weather) => {
+    const wet = w === 'damp';
+    road.albedoColor = wet ? new Color3(0.35, 0.38, 0.4) : new Color3(0.91, 0.92, 0.94);
+    road.roughness = wet ? 0.34 : 0.96;
+    road.bumpTexture!.level = wet ? 0.19 : 0.52;
+    road.clearCoat.isEnabled = wet;
+    road.clearCoat.intensity = wet ? 0.96 : 0;
+    road.clearCoat.roughness = 0.42;
+    kerb.roughness = wet ? 0.64 : 0.96;
+  };
+  setWeather('golden');
+  return { road, grass, kerb, concrete, gravel, paint, wall, setWeather };
+}
+
+// One mipmapped print sheet: all billboards, suites, distance boards and garage
+// numbers can be drawn as a single opaque batch without a material per inscription.
+export function signage(scene: Scene) {
+  const w = 2048,
+    h = 2048,
+    t = new DynamicTexture(
+      'Autodromo signwriter master',
+      { width: w, height: h },
+      scene,
+      true,
+      Texture.TRILINEAR_SAMPLINGMODE,
+    );
+  const ctx = t.getContext() as CanvasRenderingContext2D;
+  type Rect = [number, number, number, number];
+  const signs: Record<string, Rect> = {};
+  const field = (id: string, x: number, y: number, ww: number, hh: number, bg: string) => {
+    ctx.fillStyle = bg;
+    ctx.fillRect(x, y, ww, hh);
+    signs[id] = [x + 2, y + 2, ww - 4, hh - 4];
+  };
+  const label = (
+    str: string,
+    x: number,
+    y: number,
+    size: number,
+    col: string,
+    max: number,
+    italic = false,
+  ) => {
+    ctx.fillStyle = col;
+    ctx.font = `${italic ? 'italic ' : ''}900 ${size}px Arial, sans-serif`;
+    ctx.fillText(str, x, y, max);
+  };
+  const bars = (x: number, y: number, hh: number, col: string) => {
+    ctx.fillStyle = col;
+    for (let k = 0; k < 3; k++) {
+      ctx.beginPath();
+      ctx.moveTo(x + k * 34, y + hh);
+      ctx.lineTo(x + k * 34 + 24, y + hh);
+      ctx.lineTo(x + k * 34 + 60, y);
+      ctx.lineTo(x + k * 34 + 36, y);
+      ctx.closePath();
+      ctx.fill();
+    }
+  };
+  const red = '#ed4436',
+    gold = '#efb747',
+    cream = '#f6efe0',
+    ink = '#101921';
+  ctx.fillStyle = ink;
+  ctx.fillRect(0, 0, w, h);
+  field('hero', 0, 0, w, 220, ink);
+  bars(36, 42, 130, red);
+  label('AUTODROMO INTERNAZIONALE    /    ITALIA', 204, 52, 35, '#dbc7a0', 1400);
+  label('VALLE D’ORO', 185, 180, 149, cream, 1380, true);
+  ctx.fillStyle = red;
+  ctx.fillRect(1635, 0, 413, 220);
+  label('GT3', 1683, 158, 139, cream, 320, true);
+  for (const [j, col] of ['#209b64', '#f7f3e5', '#d73d34'].entries()) {
+    ctx.fillStyle = col;
+    ctx.fillRect(j * 545, 209, 545, 11);
+  }
+  for (const [i, [id, name, sub, bg, fg, accent]] of [
+    ['apex', 'APEX  //  GT3', 'WORLD ENDURANCE SERIES', ink, cream, red],
+    ['vet', 'VETTORE', 'P N E U M A T I C I', red, '#ffffed', ink],
+    ['oro', 'D’ORO  CORSE', 'COMPETIZIONE   DAL   1962', gold, ink, '#fff3ce'],
+    ['off', 'OFFICINA  ITALIA', 'REPARTO   CORSE', '#135449', cream, '#e8b757'],
+    ['pits', 'VALLE  MOTORSPORT', 'PIT LANE    /    CORSIA BOX', cream, ink, red],
+    ['tribuna', 'TRIBUNA  CENTRALE', 'AUTODROMO   VALLE   D’ORO', ink, cream, gold],
+  ].entries()) {
+    const x = (i % 2) * 1024,
+      y = 220 + Math.floor(i / 2) * 128;
+    field(id, x, y, 1024, 128, bg);
+    bars(x + 13, y + 25, 70, accent);
+    label(name, x + 164, y + 82, 72, fg, 837, true);
+    label(sub, x + 172, y + 112, 22, fg, 775);
+  }
+  for (let j = 0; j < 4; j++) {
+    const x = j * 512,
+      y = 612,
+      n = ['150', '100', '50', '01'][j];
+    field('board' + n, x, y, 512, 232, cream);
+    ctx.fillStyle = red;
+    ctx.fillRect(x, y, 24, 232);
+    label(n, x + 45, y + 184, 195, ink, 420, true);
+  }
+  for (let i = 0; i < 16; i++) {
+    const x = (i % 8) * 256,
+      y = 860 + Math.floor(i / 8) * 110;
+    field('bay' + i, x, y, 256, 110, ink);
+    ctx.fillStyle = [red, gold, '#428b84', '#d9dfcc'][i % 4];
+    ctx.fillRect(x, y, 18, 110);
+    label('BOX', x + 30, y + 38, 23, cream, 62);
+    label(String(i + 1).padStart(2, '0'), x + 85, y + 85, 79, cream, 156);
+  }
+  field('tower', 0, 1100, 410, 880, ink);
+  label('VDO', 25, 106 + 1100, 94, gold, 360, true);
+  label('CRONOMETRI', 24, 1257, 36, cream, 360);
+  for (const [i, word] of [
+    'GT3  CLASS',
+    'S1   28.39',
+    'S2   36.04',
+    'S3   31.06',
+    '1:35.490',
+    'LAP RECORD',
+  ].entries()) {
+    ctx.fillStyle = i === 4 ? red : '#25343e';
+    ctx.fillRect(14, 1300 + i * 94, 380, 80);
+    label(word, 27, 1358 + i * 94, i === 4 ? 60 : 47, i === 4 ? cream : gold, 354);
+  }
+  field('turn1', 420, 1100, 1570, 215, '#113c35');
+  label('01', 446, 1272, 170, gold, 240, true);
+  label('TORNANTE  ORO', 728, 1256, 124, cream, 1200, true);
+  field('chicane', 420, 1330, 1570, 215, ink);
+  label('07 / 08', 452, 1495, 121, red, 440, true);
+  label('LA  VARIANTE', 951, 1495, 110, cream, 988, true);
+  field('pitexit', 420, 1560, 1570, 215, cream);
+  label('PIT  EXIT', 462, 1732, 155, ink, 910, true);
+  bars(1460, 1595, 132, red);
+  t.anisotropicFilteringLevel = 8;
+  t.update(true);
+  const mat = plain(scene, 'graphic panels', 0.73);
+  mat.albedoTexture = t;
+  // A little self-fill preserves legibility on the shadow side of printed hoardings.
+  mat.emissiveTexture = t;
+  mat.emissiveColor = new Color3(0.13, 0.13, 0.13);
+  return {
+    mat,
+    uv(id: string) {
+      const [x, y, ww, hh] = signs[id];
+      return [x / w, 1 - (y + hh) / h, (x + ww) / w, 1 - y / h] as const;
+    },
+  };
+}

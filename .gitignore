@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.amp/in/
+.amp/portals/
+qa-artifacts/
+public/assets/
+*.tsbuildinfo
+*.log

@@ -1,0 +1,7 @@
+{
+  "amp.mcpServers": {
+    "playwright": { "command": "npx", "args": ["-y", "@playwright/mcp@latest", "--headless", "--browser", "chromium"] },
+    "threenative-assets": { "command": "npx", "args": ["-y", "threenative-asset-mcp"] },
+    "context7": { "command": "npx", "args": ["-y", "@upstash/context7-mcp@latest"] }
+  }
+}
