@@ -16,6 +16,7 @@ import type { Circuit } from '../types';
 import { sprintGrid, wallOffset, trapSide } from './circuit';
 import { geometry, vertex, quad, point, type Geometry, type Vec } from './road';
 import { plain, signage, randomSource, type roadMaterials } from './materials';
+import { grove } from './foliage';
 
 function meshData(g: Geometry) {
   const vd = new VertexData();
@@ -182,19 +183,16 @@ function hills(scene: Scene, grass: PBRMaterial) {
   publish(scene, 'terrain.rolling Apennine foothills', g, mat).subdivide(4);
 }
 
-// Batches are spatially partitioned so a view down the pit straight doesn't submit
-// every pine and rail support on the back of the circuit to the GPU or shadow pass.
+// Spatial batches keep off-camera architecture out of the main and shadow passes.
 function batches(scene: Scene, base: Material, glass: Material, crowd: Material) {
   type Group = { matrix: number[]; color: number[]; kind: string };
   const groups = new Map<string, Group>();
   const palette = new Map<string, Color3>();
   function place(kind: string, pos: Vec, size: Vec, color: string, yaw = 0, pitch = 0, roll = 0) {
     // Low-poly, sparse poles and terrace cards don't merit a draw per tiny
-    // cluster. Keep the dense architecture and foreground trees in tighter cells.
+    // cluster. Keep the dense architecture in tighter cells.
     const cell = kind === 'mast' || kind === 'crowd' ? 850 : 340;
-    const region = kind.startsWith('ridge ')
-      ? Math.floor((pos[0] + 470) / 600) + ':' + Math.sign(pos[2])
-      : Math.floor((pos[0] + 160) / cell) + ':' + Math.floor((pos[2] + 100) / cell),
+    const region = Math.floor((pos[0] + 160) / cell) + ':' + Math.floor((pos[2] + 100) / cell),
       key = kind + '@' + region;
     let group = groups.get(key);
     if (!group) {
@@ -228,154 +226,23 @@ function batches(scene: Scene, base: Material, glass: Material, crowd: Material)
     );
   }
   function finish() {
-    // Each spatial batch needs its own instance buffers, not a re-tessellation
-    // of the same trunk and crowns. Reuse their four CPU-side vertex datasets.
-    const trees = new Map<string, VertexData>();
-    function plant(name: string, species: string, distant: boolean) {
-      const key = species + (distant ? '.silhouette' : '');
-      let data = trees.get(key);
-      if (!data) {
-        data = treeData(species === 'cypress', distant);
-        trees.set(key, data);
-      }
-      const mesh = new Mesh(name, scene);
-      data.applyToMesh(mesh);
-      return mesh;
-    }
     for (const [key, g] of groups) {
-      const name = 'venue.' + key,
-        ridge = g.kind.startsWith('ridge '),
-        species = ridge ? g.kind.slice(6) : g.kind,
-        isTree = species === 'cypress' || species === 'pine';
+      const name = 'venue.' + key;
       let m: Mesh;
-      if (isTree) m = plant(name, species, ridge);
-      else if (g.kind === 'crowd') m = CreatePlane(name, { size: 1 }, scene);
+      if (g.kind === 'crowd') m = CreatePlane(name, { size: 1 }, scene);
       else if (g.kind === 'mast')
         m = CreateCylinder(name, { height: 1, diameterTop: 0.76, diameterBottom: 1, tessellation: 8 }, scene);
       else m = CreateBox(name, { size: 1 }, scene);
-      const transforms = Float32Array.from(g.matrix), colors = Float32Array.from(g.color);
-      const bind = (mesh: Mesh, casts: boolean) => {
-        mesh.material = g.kind === 'glass' ? glass : g.kind === 'crowd' ? crowd : base;
-        mesh.isPickable = false;
-        mesh.receiveShadows = true;
-        mesh.thinInstanceSetBuffer('matrix', transforms, 16, true);
-        mesh.thinInstanceSetBuffer('color', colors, 4, true);
-        mesh.metadata = { trackShadowCaster: casts, shadowCaster: casts };
-        mesh.freezeWorldMatrix();
-      };
-      bind(m, g.kind !== 'crowd');
-      if (isTree && !ridge) {
-        const far = plant(name + '.silhouette', species, true);
-        bind(far, false); // the shadow pass selects the master's LOD; don't submit it twice
-        // Babylon measures to the batch centre. Keep full crowns while even
-        // the nearest edge is within 180 m; both LODs keep every planting.
-        m.addLODLevel(180 + m.getBoundingInfo().boundingSphere.radiusWorld, far);
-      }
+      m.material = g.kind === 'glass' ? glass : g.kind === 'crowd' ? crowd : base;
+      m.isPickable = false;
+      m.receiveShadows = true;
+      m.thinInstanceSetBuffer('matrix', Float32Array.from(g.matrix), 16, true);
+      m.thinInstanceSetBuffer('color', Float32Array.from(g.color), 4, true);
+      m.metadata = { trackShadowCaster: g.kind !== 'crowd', shadowCaster: g.kind !== 'crowd' };
+      m.freezeWorldMatrix();
     }
   }
   return { place, rod, finish };
-}
-
-// Irregular, layered broad crowns and narrow Lombardy cypresses, with the trunk and
-// foliage sharing a single vertex-colour batch. Not camera-facing tree billboards.
-function treeData(cypress: boolean, distant: boolean) {
-  const g = geometry(),
-    rand = randomSource(cypress ? 74 : 268),
-    n = distant ? 7 : 10;
-  function shape(cx: number, cz: number, profile: number[][], leaf: boolean) {
-    let prev: number[] = [];
-    for (let i = 0; i < profile.length; i++) {
-      const [h, r] = profile[i],
-        row: number[] = [];
-      for (let j = 0; j < n; j++) {
-        const a = (j / n) * 2 * Math.PI,
-          rr = r * (0.87 + rand() * 0.22),
-          k = 0.85 + rand() * 0.31;
-        const col: Vec = leaf
-          ? [k * (0.14 + h * 0.12), k * (0.23 + h * 0.17), k * (0.095 + h * 0.09)]
-          : [0.21, 0.139, 0.071];
-        row.push(
-          vertex(
-            g,
-            [cx + Math.sin(a) * rr, h + (leaf ? (rand() - 0.5) * 0.015 : 0), cz + Math.cos(a) * rr],
-            [j / n, h],
-            col,
-          ),
-        );
-      }
-      if (prev.length)
-        for (let j = 0; j < n; j++) {
-          const k = (j + 1) % n;
-          quad(g, prev[j], prev[k], row[k], row[j]);
-        }
-      prev = row;
-    }
-  }
-  if (distant) {
-    // One umbrella or spire hull replaces the intersecting canopy lobes, but
-    // retains their skirt, outline, colour gradient and the daylight under it.
-    shape(0, 0, [[0, 0.04], [0.62, 0.03]], false);
-    shape(0, 0, cypress
-      ? [[0.055, 0.02], [0.18, 0.34], [0.51, 0.46], [0.81, 0.26], [1, 0.015]]
-      : [[0.44, 0.02], [0.60, 0.42], [0.76, 0.54], [0.90, 0.42], [1, 0.055]], true);
-    return meshData(g);
-  }
-  shape(
-    0,
-    0,
-    [
-      [0, 0.042],
-      [0.48, 0.032],
-      [0.72, 0.009],
-    ],
-    false,
-  );
-  if (cypress)
-    shape(
-      0,
-      0,
-      [
-        [0.055, 0.012],
-        [0.13, 0.274],
-        [0.32, 0.43],
-        [0.51, 0.46],
-        [0.67, 0.37],
-        [0.85, 0.22],
-        [0.998, 0.014],
-      ],
-      true,
-    );
-  else {
-    shape(
-      0,
-      0,
-      [
-        [0.43, 0.012],
-        [0.55, 0.28],
-        [0.69, 0.43],
-        [0.83, 0.47],
-        [0.95, 0.34],
-        [1, 0.045],
-      ],
-      true,
-    );
-    for (let j = 0; j < 4; j++) {
-      const a = j * 1.57 + 0.35;
-      shape(
-        Math.sin(a) * 0.23,
-        Math.cos(a) * 0.23,
-        [
-          [0.5, 0.012],
-          [0.6, 0.22],
-          [0.73, 0.32],
-          [0.82, 0.3],
-          [0.9, 0.08],
-        ],
-        true,
-      );
-    }
-  }
-  return meshData(g);
 }
 
 function spectators(scene: Scene) {
@@ -765,6 +632,7 @@ export function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof r
 
   // Mixed, slightly irregular plantations. Reject neighbouring pieces of circuit,
   // and leave the occupied paddock clear, including the outside of the hairpin.
+  const trees = grove(scene);
   for (let i = 0; i < 690; i++) {
     const s = rnd() * c.length,
       p = c.at(s),
@@ -776,29 +644,31 @@ export function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof r
       np = c.at(near.s);
     if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 9) continue;
     const tall = rnd() < 0.56,
-      h = (tall ? 8.5 : 6) + rnd() * 7.3,
-      w = tall ? 1.75 + rnd() * 1.15 : 5.65 + rnd() * 3.9;
-    place(
+      h = .65 + rnd() * .57,
+      w = (tall ? .71 : .76) + rnd() * .51;
+    trees.plant(
       tall ? 'cypress' : 'pine',
       [v[0], floor(v[0], v[2]), v[2]],
       [w, h, w * (0.82 + rnd() * 0.27)],
-      ['#a5ac8b', '#b8bb95', '#859b85', '#c1bc8a'][i % 4],
       rnd() * 6.28,
+      i % 4,
     );
   }
   for (let i = 0; i < 310; i++) {
     const x = -470 + rnd() * 2240,
       z = i % 2 ? -630 - rnd() * 210 : 820 + rnd() * 230,
-      h = 8 + rnd() * 8,
-      w = 4 + rnd() * 6;
-    place(
-      i % 4 === 0 ? 'ridge cypress' : 'ridge pine',
+      h = .65 + rnd() * .62,
+      w = .56 + rnd() * .56;
+    trees.plant(
+      i % 4 === 0 ? 'cypress' : 'pine',
       [x, floor(x, z) - 0.08, z],
-      [i % 4 === 0 ? w * 0.26 : w, h, i % 4 === 0 ? w * 0.29 : w],
-      '#abb8a1',
+      [w, h, w],
       rnd() * 6.28,
+      i % 4,
+      true,
     );
   }
+  trees.finish();
   // Terracotta farmsteads and a campanile near the northern ridge: a distinctly
   // Italian horizon even when the player is away from motorsport architecture.
   for (const [x, z] of [

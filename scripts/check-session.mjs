@@ -50,6 +50,14 @@ try {
   assert.ok(await game.evaluate(() => !!window.__GT3_DEBUG__), await game.locator('#progress').textContent());
   await ready('garage');
   assert.equal(await game.evaluate(() => document.featurePolicy.allowsFeature('gamepad')), false);
+  // Leave the overcast download unresolved. Returning to the loaded dry sky
+  // must release its readiness token before Drive can start.
+  await page.route('**/skies/overcast_race.env', () => {});
+  await Promise.all([page.waitForRequest('**/skies/overcast_race.env'),
+    game.locator('[data-setting="weather"]').selectOption('damp')]);
+  await game.locator('[data-setting="weather"]').selectOption('golden');
+  await ready('garage');
+  await page.unroute('**/skies/overcast_race.env');
   await game.evaluate(() => window.__GT3_DEBUG__.freeze(true));
   await game.locator('select[data-setting="mode"]').selectOption('hotlap');
   await game.locator('[data-action="start"]').click();
@@ -101,12 +109,32 @@ try {
   assert.deepEqual(await game.evaluate(() => window.sessionAudio.map((c) => c.state)), ['closed', 'closed']);
   assert.equal(await game.evaluate(() => typeof window.__GT3_DEBUG__), 'undefined');
 
+  // A successfully decoded car and sky do not make a missing circuit map OK.
+  // Test both a non-blocking color map and the blocking normal map.
+  for (const part of ['albedo', 'normal']) {
+    const path = `asphalt/${part}.jpg`;
+    await page.route(`**/${path}`, route => route.fulfill({ status: 503, body: 'fixture' }));
+    await page.goto(new URL('?qa=1&autostart=1', gameURL).href);
+    await page.waitForFunction(p => document.querySelector('#loading.interrupted #progress')?.textContent.includes(p), path);
+    assert.ok(await page.getByRole('link', { name: 'Retry launch' }).isVisible());
+    await page.unroute(`**/${path}`);
+  }
+  await page.getByRole('link', { name: 'Retry launch' }).click();
+  await page.waitForFunction(() => window.__GT3_DEBUG__?.getState().phase === 'race' && window.__GT3_DEBUG__.getState().ready);
+
+  // A driver that never receives the selected sky must return control to the
+  // launch UI even if the server returns neither data nor an HTTP error.
+  await page.route('**/skies/overcast_race.env', () => {});
+  await page.evaluate(() => window.__GT3_DEBUG__.setWeather('damp'));
+  await page.getByText('Timed out loading the damp sky. Retry launch.', { exact: true }).waitFor();
+  await page.unroute('**/skies/overcast_race.env');
+
   await page.route('**/models/ferrari_base.glb', (route) => route.fulfill({ status: 503, body: 'fixture' }));
   await page.goto(gameURL.href);
   await page.waitForFunction(() => document.querySelector('#progress')?.textContent.includes('503'));
   assert.equal(await page.evaluate(() => typeof window.__GT3_DEBUG__), 'undefined');
   assert.deepEqual(faults, []);
-  console.log(`PASS: denied gamepad, ${driving.speedKmh.toFixed(1)} km/h on keys, pause/resume, restart, garage, cache/exit, audio, failed boot`);
+  console.log(`PASS: denied gamepad, ${driving.speedKmh.toFixed(1)} km/h on keys, pause/resume, restart, garage, cache/exit, audio, superseded and stalled skies, missing circuit maps → retry, failed boot`);
 } finally {
   await browser.close();
 }

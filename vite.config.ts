@@ -14,10 +14,7 @@ const host = {
 // Babylon also imports a few shaders statically from the engine: moving those
 // into a language pack would eagerly load BOTH packs and can cycle ShaderStore.
 const shader = /\/@babylonjs\/core\/Shaders(WGSL)?\/(?:ShadersInclude\/)?([^/]+)\.js$/;
-const garageShaders = new Set(`background bloomMerge chromaticAberration circleOfConfusion default depth depthBoxBlur
-  depthOfFieldMerge extractHighlights fxaa geometry grain imageProcessing kernelBlur motionBlur pass pbr rgbdDecode
-  screenSpaceReflection2 screenSpaceReflection2Blur screenSpaceReflection2BlurCombiner shadowMap
-  shadowMapFragmentSoftTransparentShadow sharpen ssao2 ssaoCombine`.split(/\s+/));
+const garageShaders = new Set('background default pbr rgbdDecode shadowMap shadowMapFragmentSoftTransparentShadow'.split(' '));
 const shaderChunk: GetManualChunk = (id, { getModuleInfo }) => {
   const match = shader.exec(id);
   if (!match) return;

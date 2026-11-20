@@ -18,6 +18,12 @@ and its cars are not FIA homologated or endorsed by the named manufacturers.
 HDRIs and PBR textures: Poly Haven (CC0), https://polyhaven.com/license
 The asset manifest lists the exact downloaded sources: /assets/manifest.json
 
+Valle d'Oro vegetation: original Cupressus sempervirens and Pinus pinea models,
+branch/needle sprays, bark and three-view distance bakes authored for this game.
+No external plant assets or photography. Reproduce with scripts/bake-foliage.py.
+These tree meshes and the italian-conifers atlas are dedicated to the public
+domain under CC0 1.0: https://creativecommons.org/publicdomain/zero/1.0/
+
 Barlow Condensed by Jeremy Tribby — SIL Open Font License 1.1.
 Draco by Google — Apache 2.0. Babylon.js — Apache 2.0. Jolt Physics — MIT.
 Full license texts and upstream notices: /assets/third-party-notices.txt

@@ -8,7 +8,7 @@ In the cockpit, read the instruments in the car. Select **MoTeC C127** to open t
 
 ## Play a downloaded release
 
-Phones and computers open the same 3D game. A current browser with WebGPU or WebGL 2 and graphics acceleration is recommended. High is the default on every screen. The renderer adjusts race resolution to measured frame times; the 120 Hz physics, opponents and HUD stay the same. Devices without either graphics API cannot run this game.
+Phones and computers open the same 3D game. Use a current browser with WebGPU or WebGL 2 and graphics acceleration. **High** (default) renders at your display’s pixel density up to a 1920×1080 pixel budget. **Ultra** raises the budget to 2560×1440 and increases shadow resolution. Choose **Balanced** if you need more speed: it adjusts race resolution to measured frame times. All three use the same cars, foliage, lighting and 120 Hz physics. None uses motion blur, screen-space reflections or a sharpening filter. Devices without either graphics API cannot run this game.
 
 If launch stalls, select **Launch with WebGL 2** on the loading screen. This runs the same cars, lighting and circuit without waiting for a WebGPU device. Open the link directly in your browser if an embedded preview blocks 3D graphics.
 

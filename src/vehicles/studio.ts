@@ -15,9 +15,10 @@ import '@babylonjs/loaders/glTF/2.0/glTFLoader';
 import '@babylonjs/loaders/glTF/2.0/Extensions/KHR_draco_mesh_compression';
 
 export const corners = ['FL', 'FR', 'RL', 'RR'] as const;
-// Projected pixels/metre. The last two transitions widen just the emissive
-// sample, not the chassis or any other material.
-export const detailBands = [145, 30, 10, 5, 2.6] as const;
+// Pixels/metre. The close race skin keeps the original panels without the
+// inspection interior. Batch wheel assemblies below ~30 pixels per tyre.
+// The last two transitions widen only the emissive sample, not the chassis.
+export const detailBands = [250, 42, 10, 5, 2.6] as const;
 export type Slot =
   | 'paint'
   | 'trim'
@@ -218,6 +219,17 @@ function appendLOD(
       nx = N[i],
       ny = N[i + 1],
       nz = N[i + 2];
+    // A near clear-coated panel exposes even a small weld across a bonnet
+    // seam or fender crease. Preserve the donor's positions and split normals
+    // on this skin; the two distant body tiers still use spatial reduction.
+    if (s.slot === 'paint' && !distant) {
+      const j = b.positions.length / 3;
+      b.positions.push(x, y, z);
+      b.normals.push(nx, ny, nz);
+      charts.push(chart);
+      remap[r] = j;
+      return j;
+    }
     // Keep opposite faces of thin outer panels apart. On distant mechanical
     // details, subpixel bevels can collapse into the same vertex.
     const ax = Math.abs(nx),

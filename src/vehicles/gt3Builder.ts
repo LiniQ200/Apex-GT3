@@ -104,11 +104,15 @@ export const buildVehicle: BuildVehicle = async (scene, chassis, livery, number)
   let flashLight: PointLight | null = null;
   return {
     root,
-    update(d, dt) {
+    update(d, dt, driverView = false) {
       root.position.set(d.x, d.y, d.z);
       root.rotation.set(d.pitch, d.yaw, d.roll);
       const cam = scene.activeCamera;
-      if (cam) {
+      // The helmet follows this frame's rig. The previous eye position can be
+      // metres behind after one long frame; it must never select an exterior LOD.
+      if (driverView) {
+        if (detail !== 0) show(0);
+      } else if (cam) {
         cam.getViewMatrix(); // sync globalPosition after a cut, including a parented camera
         const eye = cam.globalPosition,
           lens = cam.getProjectionMatrix().m;

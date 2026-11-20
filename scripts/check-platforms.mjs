@@ -23,19 +23,19 @@ try {
 await mkdir('qa-artifacts/platforms', { recursive: true });
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'] });
 try {
-  // A successful draw call does not mean the graphics driver presented the
-  // image. Black out the final fullscreen triangle/quad, but not PBR geometry.
+  // A successful draw call doesn't guarantee a picture. Deny every canvas
+  // draw until the test releases it, without affecting the shadow target.
   const display = await browser.newPage({ viewport: { width: 800, height: 450 } });
   display.setDefaultTimeout(120_000);
   const displayErrors = [];
   display.on('pageerror', e => displayErrors.push(e.message));
   await display.addInitScript(() => {
     window.blackFrames = 0;
+    window.blackAll = true;
     for (const method of ['drawElements', 'drawArrays', 'drawElementsInstanced', 'drawArraysInstanced']) {
       const draw = WebGL2RenderingContext.prototype[method];
       WebGL2RenderingContext.prototype[method] = function (...args) {
-        if (this.canvas.id === 'scene' && !this.getParameter(this.DRAW_FRAMEBUFFER_BINDING) &&
-            (window.blackAll || this.getProgramParameter(this.getParameter(this.CURRENT_PROGRAM), this.ACTIVE_ATTRIBUTES) === 1)) {
+        if (window.blackAll && this.canvas.id === 'scene' && !this.getParameter(this.DRAW_FRAMEBUFFER_BINDING)) {
           this.clearColor(0, 0, 0, 1); this.clear(this.COLOR_BUFFER_BIT); window.blackFrames++; return;
         }
         return draw.apply(this, args);
@@ -48,14 +48,17 @@ try {
     await route.fulfill({ response, headers: { ...response.headers(), 'content-security-policy': "worker-src 'none'" } });
   });
   await display.goto(glURL.href);
-  await display.waitForFunction(() => window.blackFrames > 0 && window.__GT3_DEBUG__?.getState().ready && document.querySelector('#loading').style.display === 'none');
+  await display.waitForFunction(() => window.blackFrames > 0 && window.__GT3_DEBUG__?.getState().frame >= 3);
+  assert.equal(await display.locator('#loading').isVisible(), true, 'a black completed frame must not reveal the garage');
+  await display.evaluate(() => { window.blackAll = false; });
+  await display.waitForFunction(() => window.__GT3_DEBUG__?.getState().ready && document.querySelector('#loading').style.display === 'none');
   const range = await display.evaluate(() => {
     const tile = document.createElement('canvas'); tile.width = 32; tile.height = 20;
     const ctx = tile.getContext('2d'); ctx.drawImage(document.querySelector('#scene'), 0, 0, 32, 20);
     const rgb = ctx.getImageData(0, 0, 32, 20).data.filter((_, i) => i % 4 !== 3);
     return Math.max(...rgb) - Math.min(...rgb);
   });
-  assert.ok(range > 40, `the actual canvas must recover from black fullscreen output: RGB range ${range}`);
+  assert.ok(range > 40, `the actual canvas must recover from a transient blank frame: RGB range ${range}`);
   await display.evaluate(() => { window.blackAll = true; });
   await display.locator('[data-quality=ultra]').click();
   await display.getByText(/returned a blank picture/).waitFor();
@@ -63,7 +66,7 @@ try {
   assert.ok(await display.getByRole('link', { name: 'Retry launch' }).isVisible());
   assert.deepEqual(displayErrors, []);
   await display.close();
-  console.log(`PASS: workers denied and fullscreen output black → lit 3D garage (RGB range ${range}); total loss of color → launch options`);
+  console.log(`PASS: workers denied, transient blank frames → lit 3D garage (RGB range ${range}); persistent blank frames → launch options`);
 
   const ctx = await browser.newContext({ viewport: { width: 844, height: 390 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true });
   await ctx.addInitScript(() => Object.defineProperty(navigator, 'gpu', { value: undefined }));

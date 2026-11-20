@@ -215,6 +215,8 @@ await Promise.all([
   haven('terrain', ['aerial_grass_rock', 'coast_sand_rocks_02']),
 ]);
 await prepareTrackMaps({ root, assets, previous, cached, save });
+const foliage = 'foliage/italian-conifers.webp';
+await save(foliage, await readFile(`assets/${foliage}`), 'Valle d’Oro original / scripts/bake-foliage.py (CC0-1.0)');
 const notices = [];
 for (const [name, file] of [
   ['Babylon.js and included components', 'node_modules/@babylonjs/core/NOTICE.md'],

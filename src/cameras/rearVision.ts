@@ -37,7 +37,6 @@ export function createRearVision(scene: Scene, mount: TransformNode) {
   const target = new RenderTargetTexture('rear vision feed', { width, height }, scene, {
     generateMipMaps: false,
     samples: 1,
-    gammaSpace: false,
     samplingMode: Texture.BILINEAR_SAMPLINGMODE,
     // Babylon's normal clustered-light pass uses the main view's tile mask
     // and depth slices. Rebin the same lamps for the tail lens before this
@@ -45,7 +44,6 @@ export function createRearVision(scene: Scene, mount: TransformNode) {
     enableClusteredLights: true,
   });
   target.activeCamera = camera;
-  target.disableImageProcessing = true;
   target.noPrePassRenderer = true;
   target.useCameraPostProcesses =
     target.renderParticles =

@@ -51,7 +51,7 @@ page.on('response', (r) => {
     faults.push(`${r.status()} ${path}`);
     console.log(faults.at(-1));
   }
-  if (/^\/assets\/(draco|models|skies|asphalt|concrete|kerb|terrain)\//.test(path)) assets.add(path);
+  if (/^\/assets\/(draco|models|skies|asphalt|concrete|kerb|terrain|foliage)\//.test(path)) assets.add(path);
 });
 page.on('requestfailed', (r) => {
   if (r.failure()?.errorText !== 'net::ERR_ABORTED') faults.push(`${r.failure()?.errorText} ${r.url()}`);
@@ -74,7 +74,7 @@ async function shot(name) {
   await page.waitForFunction((n) => window.__GT3_DEBUG__.getState().frame > n + 1, before);
   const png = await page.screenshot({ path: `${dir}/${name}.png`, timeout: 90000 });
   // Sample the 3D viewport, not the DOM overlays. GPU validation alone won't
-  // detect an all-black post-process result from non-finite HDR radiance.
+  // detect black color output from a valid draw.
   const lit = await page.evaluate(async (data) => {
     const im = await createImageBitmap(await (await fetch(`data:image/png;base64,${data}`)).blob());
     const ctx = new OffscreenCanvas(32, 24).getContext('2d');
@@ -87,6 +87,10 @@ async function shot(name) {
   }, png.toString('base64'));
   assert.ok(lit > 0.15, `${name}: only ${(100 * lit).toFixed(1)}% of the central scene is lit`);
   const s = await state();
+  if (s.settings.graphics === 'high') {
+    const buffer = await page.locator('#scene').evaluate(c => [c.width, c.height]);
+    assert.deepEqual(buffer, [page.viewportSize().width, page.viewportSize().height], `${name}: High must retain native pixels at DPR 1`);
+  }
   frames.push({
     name,
     backend: s.backend,
@@ -117,8 +121,37 @@ try {
     const name = garage.backend.toLowerCase();
     await shot(`${name}-grid`);
     if (full) {
-      await page.evaluate(() => window.__GT3_DEBUG__.setCamera('cockpit'));
+      await page.evaluate(() => {
+        const game = window.__GT3_DEBUG__;
+        game.freeze(true);
+        game.step(Math.max(0, Math.round((4.5 - game.getState().elapsed) * 120)));
+        game.setCamera('cockpit');
+      });
       await shot(`${name}-cockpit`);
+      // The first picture after a long simulation frame must show the same
+      // wheel and dash as a second draw of that exact pose. Exclude HUD, live
+      // instruments and mirrors. A stationary screenshot misses this regression.
+      const cabin = await page.evaluate(async () => {
+        const game = window.__GT3_DEBUG__, canvas = document.querySelector('#scene');
+        const ctx = new OffscreenCanvas(96, 48).getContext('2d', { willReadFrequently: true });
+        async function sample() {
+          await new Promise(requestAnimationFrame);
+          const { width: w, height: h } = canvas;
+          ctx.drawImage(canvas, 0.32*w, 0.715*h, 0.36*w, 0.26*h, 0, 0, 96, 48);
+          return ctx.getImageData(0, 0, 96, 48).data;
+        }
+        game.step(30);
+        const first = await sample(), second = await sample();
+        let delta = 0, level = 0;
+        for (let i = 0; i < first.length; i++) if (i % 4 !== 3) {
+          delta += Math.abs(first[i] - second[i]);
+          level += second[i];
+        }
+        game.freeze(false);
+        return { delta: delta / (96*48*3), level: level / (96*48*3), speed: game.getState().speedKmh };
+      });
+      assert.ok(cabin.speed > 100 && cabin.level > 10 && cabin.delta < 2,
+        `${name}: the moving cockpit changed between identical poses: ${JSON.stringify(cabin)}`);
       await page.evaluate(() => {
         window.__GT3_DEBUG__.setWeather('damp');
         window.__GT3_DEBUG__.setCamera('hood');
@@ -310,6 +343,7 @@ try {
     'models/car_concept_base.glb',
     'draco/draco_decoder.wasm',
     'skies/golden_hour.env',
+    'foliage/italian-conifers.webp',
     ...['asphalt', 'concrete', 'terrain', 'kerb'].flatMap((s) =>
       ['albedo', 'normal', 'orm'].map((k) => `${s}/${k}.jpg`),
     ),

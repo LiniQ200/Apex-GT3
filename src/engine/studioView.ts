@@ -42,7 +42,7 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
   try {
     const cameras = createCameras(scene, circuit), light = lighting(scene);
     let trackRoot: TransformNode | undefined, track: Pick<TrackScene, 'setWeather' | 'setLights'> | undefined;
-    let pending: Promise<void> | undefined, directColor = false;
+    let pending: Promise<void> | undefined;
     // Check the submitted game canvas, not the HTML dashboard or an intermediate
     // render target. This small, one-shot readback never runs in steady driving.
     function hasPicture() {
@@ -73,7 +73,7 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
           } catch (error) {
             if (!(error instanceof DOMException && error.name === 'SecurityError')) throw error;
           }
-          if (!visible && ++misses < 8) return; // Allow cold post-processes time to link.
+          if (!visible && ++misses < 8) return; // Allow cold material programs time to link.
           sample.remove(); release.remove(); resolve(visible);
         });
       });
@@ -81,17 +81,10 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
     async function check() {
       await whenSceneReady(scene);
       if (await hasPicture()) return;
-      if (backend === 'WebGL2' && !directColor) {
-        directColor = true;
-        light.recoverColor();
-        await whenSceneReady(scene);
-        if (await hasPicture()) return;
-      }
       throw new GraphicsUnavailable(`${backend} returned a blank picture. Try another graphics launch option or open the game directly in your browser.`);
     }
     return {
-      canvas, backend, adapter, software,
-      get reason() { return directColor ? 'Blank screen-space output; using direct PBR lighting' : reason; },
+      canvas, backend, adapter, software, reason,
       async prepareTrack(road, weather) {
         const { buildTrack } = await import('../track');
         if (scene.isDisposed) return;
@@ -160,7 +153,11 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
         raf = requestAnimationFrame(render);
       },
       draw(s, lookBack, dt) {
-        rigs.forEach((rig, i) => { if (s.drivers[i]) rig.update(s.drivers[i], dt); });
+        const driverView = s.phase !== 'garage' && s.camera === 'cockpit' && !lookBack;
+        rigs.forEach((rig, i) => {
+          const driver = s.drivers[i];
+          if (driver) rig.update(driver, dt, driverView && driver.id === 0);
+        });
         cameras.update(s, lookBack, dt);
         track?.setLights(s.lights);
         light.update(s, rigs, engine.getDeltaTime());

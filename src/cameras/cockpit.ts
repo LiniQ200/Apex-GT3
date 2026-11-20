@@ -7,7 +7,7 @@ import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
 import { CreatePlane } from '@babylonjs/core/Meshes/Builders/planeBuilder';
 import type { Material } from '@babylonjs/core/Materials/material';
-import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
+import { ImageProcessingConfiguration } from '@babylonjs/core/Materials/imageProcessingConfiguration';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
@@ -228,11 +228,14 @@ function fitCockpit(scene: Scene, column: TransformNode) {
   lcd.emissiveColor = Color3.White();
   lcd.specularColor = Color3.Black();
   lcd.diffuseTexture = cluster.texture;
-  // With the HDR pipeline the rear target already stores linear radiance;
-  // don't gamma-decode it again before the main camera's single ACES pass.
-  const glass = new PBRMaterial('rear vision glass', scene);
-  glass.unlit = true;
-  glass.albedoTexture = rear.target;
+  // Tone-map the rear scene before storing it in RGBA8. The silvered faces
+  // reproduce those display values without lighting or grading them a second time.
+  const glass = new StandardMaterial('rear vision glass', scene);
+  glass.disableLighting = true;
+  glass.fogEnabled = false;
+  glass.emissiveTexture = rear.target;
+  glass.imageProcessingConfiguration = new ImageProcessingConfiguration();
+  glass.imageProcessingConfiguration.isEnabled = false;
   glass.backFaceCulling = false;
   const dash = pod('competition cluster', mount, 0.335, 0.122, shell, lcd);
   dash.position.set(0, concept ? 0.292 : 0.058, concept ? 0 : 0.155);

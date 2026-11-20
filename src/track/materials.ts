@@ -35,7 +35,9 @@ function mapped(scene: Scene, name: string) {
         noMipmap: false, samplingMode: Texture.TRILINEAR_SAMPLINGMODE,
         gammaSpace: color, useSRGBBuffer: color,
       });
-      t.anisotropicFilteringLevel = 8;
+      // Keep colour detail at driver-height grazing angles. The lower-frequency
+      // linear data needs fewer taps; only albedo gets the sRGB transfer.
+      t.anisotropicFilteringLevel = color ? 8 : 4;
       return t;
     };
   m.albedoTexture = map('albedo');
@@ -46,41 +48,11 @@ function mapped(scene: Scene, name: string) {
   return m;
 }
 
-function aggregate(scene: Scene) {
-  const n = 128,
-    rand = randomSource(4241),
-    height = Float32Array.from({ length: n * n }, rand),
-    data = new Uint8Array(n * n * 4);
-  for (let y = 0; y < n; y++)
-    for (let x = 0; x < n; x++) {
-      const i = y * n + x,
-        h = height[i];
-      data[4 * i] = 105 + h * 44;
-      data[4 * i + 1] = 128 + 46 * (height[((y + 1) % n) * n + x] - h);
-      data[4 * i + 2] = 109 + 36 * h;
-      data[4 * i + 3] = 128 + 46 * (height[y * n + ((x + 1) % n)] - h);
-    }
-  const t = RawTexture.CreateRGBATexture(data, n, n, scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
-  t.name = '28× stone aggregate';
-  t.uScale = t.vScale = 28;
-  t.wrapU = t.wrapV = Texture.WRAP_ADDRESSMODE;
-  t.gammaSpace = false;
-  return t;
-}
-
-function wearMap(scene: Scene, c: Circuit) {
-  // A tyre is several texels across at 5–6 cm/texel. Keep the precision
-  // along the 4.33 km lap, instead of rasterising millions of redundant pixels.
-  const w = 256,
-    h = 4096,
-    t = new DynamicTexture(
-      'continuous lap wear — UV2',
-      { width: w, height: h },
-      scene,
-      true,
-      Texture.TRILINEAR_SAMPLINGMODE,
-    );
-  const ctx = t.getContext() as CanvasRenderingContext2D,
+function lapSurface(scene: Scene, c: Circuit) {
+  // About 7–8 cm across the lane, 1 m along it. Rasterise the narrow tyre
+  // marks on the CPU; only the finished, packed atlas goes to the GPU.
+  const engine = scene.getEngine(), w = 192, h = Math.min(4096, engine.getCaps().maxTextureSize);
+  const ctx = engine.createCanvas(w, h).getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D,
     rand = randomSource(41);
   const stationX = (s: number, offset: number) => {
     const p = c.at(s);
@@ -175,44 +147,42 @@ function wearMap(scene: Scene, c: Circuit) {
     }
     ctx.restore();
   }
+  // UV2 R dyes the aggregate (not the final lit pixel). B changes only the
+  // roughness of damp asphalt. Interpolate drainage between survey stations;
+  // traffic pumps water off the racing line, crossfall leaves more on the low side.
+  const { data } = ctx.getImageData(0, 0, w, h);
+  const spans = 8, rows = 256, stride = spans + 1;
+  const hollows = Float32Array.from({ length: rows * stride }, randomSource(915));
+  const across = new Float32Array(stride);
+  // Babylon squares its linear detail-albedo multiplier; 0.5 is unity.
+  const dye = Float32Array.from({ length: 256 }, (_, value) => 127.5 * Math.sqrt(value / 255));
+  const smooth = (v: number) => v * v * (3 - 2 * v);
+  for (let y = 0; y < h; y++) {
+    const v = (y + 0.5) / h, p = c.at(v * c.length), line = groove(p);
+    for (let j = 0; j < stride; j++) {
+      // Offset adjacent columns so their hollows do not end on the same transect.
+      const k = v * rows + j * 0.39, row = Math.floor(k);
+      const a = hollows[(row % rows) * stride + j], b = hollows[((row + 1) % rows) * stride + j];
+      across[j] = a + (b - a) * smooth(k - row);
+    }
+    for (let x = 0; x < w; x++) {
+      const u = (x + 0.5) / w, d = (2 * u - 1) * p.halfWidth;
+      const j = Math.floor(u * spans), hollow = across[j] + (across[j + 1] - across[j]) * smooth(u * spans - j);
+      const swept = Math.max(0, 1 - Math.abs(d - line) / 2.6);
+      const film = Math.max(0, Math.min(1, (hollow - 0.2) * 1.4 - swept * 0.43 - p.bank * d * 0.52));
+      const i = 4 * (y * w + x);
+      data[i] = dye[data[i]] * (1 - 0.06 * film);
+      data[i + 1] = data[i + 3] = 128; // Neutral tangent detail. Normals come from the scan.
+      data[i + 2] = 144 - 120 * film;
+    }
+  }
+  const t = RawTexture.CreateRGBATexture(data, w, h, scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
+  t.name = 'lap rubber and drainage — UV2';
   t.coordinatesIndex = 1;
   t.gammaSpace = false;
   t.wrapU = Texture.CLAMP_ADDRESSMODE;
   t.wrapV = Texture.WRAP_ADDRESSMODE;
   t.anisotropicFilteringLevel = 4;
-  t.update(false);
-  return t;
-}
-function waterMap(scene: Scene) {
-  const w = 256,
-    h = 1024,
-    t = new DynamicTexture(
-      'damp pockets — UV2',
-      { width: w, height: h },
-      scene,
-      true,
-      Texture.TRILINEAR_SAMPLINGMODE,
-    ),
-    ctx = t.getContext() as CanvasRenderingContext2D;
-  const rand = randomSource(915);
-  ctx.fillStyle = '#4bfa00';
-  ctx.fillRect(0, 0, w, h);
-  for (let j = 0; j < 220; j++) {
-    const x = rand() * w,
-      y = rand() * h;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(8 + rand() * 30, 1 + rand() * 5);
-    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-    g.addColorStop(0, 'rgba(255,72,0,.99)');
-    g.addColorStop(1, 'rgba(255,72,0,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(-1, -1, 2, 2);
-    ctx.restore();
-  }
-  t.coordinatesIndex = 1;
-  t.gammaSpace = false;
-  t.update(false);
   return t;
 }
 
@@ -221,15 +191,10 @@ export function roadMaterials(scene: Scene, c: Circuit) {
     grass = mapped(scene, 'terrain'),
     kerb = mapped(scene, 'kerb'),
     concrete = mapped(scene, 'concrete');
-  road.lightmapTexture = wearMap(scene, c);
-  road.useLightmapAsShadowmap = true;
-  road.detailMap.texture = aggregate(scene);
-  road.detailMap.diffuseBlendLevel = 0.26;
-  road.detailMap.bumpLevel = 0.36;
-  road.detailMap.roughnessBlendLevel = 0.22;
+  road.detailMap.texture = lapSurface(scene, c);
+  road.detailMap.bumpLevel = 0;
   road.detailMap.isEnabled = true;
-  road.clearCoat.useRoughnessFromMainTexture = true;
-  road.clearCoat.indexOfRefraction = 1.333;
+  kerb.albedoTexture!.level = 1.16; // The neutral plaster scan sits underneath the red/white instance pigments.
   grass.albedoColor = new Color3(0.49, 0.89, 0.61);
   grass.bumpTexture!.level = 0.5;
   // Raked gravel uses local neutral aggregate rather than green terrain albedo.
@@ -246,16 +211,16 @@ export function roadMaterials(scene: Scene, c: Circuit) {
   wall.bumpTexture!.level = 0.17;
   const setWeather = (w: Weather) => {
     const wet = w === 'damp';
-    road.albedoColor = wet ? new Color3(0.35, 0.38, 0.4) : new Color3(0.91, 0.92, 0.94);
-    road.roughness = wet ? 0.34 : 0.96;
-    road.enableSpecularAntiAliasing = wet;
-    road.bumpTexture!.level = wet ? 0.19 : 0.52;
-    if (wet) road.clearCoat.texture ??= waterMap(scene);
-    road.clearCoat.isEnabled = wet;
-    road.clearCoat.intensity = wet ? 0.96 : 0;
-    road.clearCoat.roughness = 0.42;
-    kerb.roughness = wet ? 0.64 : 0.96;
-    paint.roughness = wet ? 0.46 : 0.68;
+    // Damp stone, not a second glossy slab. One dielectric lobe reflects the
+    // actual sky, with ~2.3% normal-incidence reflectance wet vs 4% dry.
+    road.albedoColor.setAll(wet ? 0.55 : 0.89);
+    road.indexOfRefraction = wet ? 1.36 : 1.5;
+    road.roughness = wet ? 0.81 : 1;
+    road.bumpTexture!.level = wet ? 0.48 : 0.68;
+    road.detailMap.diffuseBlendLevel = wet ? 1 : 0.8;
+    road.detailMap.roughnessBlendLevel = wet ? 1 : 0;
+    kerb.roughness = wet ? 0.61 : 0.91;
+    paint.roughness = wet ? 0.52 : 0.74;
     gravel.albedoColor = wet ? new Color3(0.65, 0.51, 0.36) : new Color3(0.96, 0.77, 0.53);
   };
   setWeather('golden');

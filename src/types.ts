@@ -24,7 +24,7 @@ export type GridWheelLayouts = (driverId: number) => WheelLayout;
 export interface Driver { id:number; name:string; number:string; livery:number; x:number; y:number; z:number; yaw:number; pitch:number; roll:number; s:number; d:number; distance:number; distanceAtFlag?:number; completedLaps:number; finishTime:number|null; speed:number; rpm:number; gear:number; throttle:number; brake:number; steer:number; slip:number; wheelAngle:number; wheelAngles:[number,number,number,number]; wheelCompressionM:number[]; tireTempC:number[]; brakeTempC:number[]; tcActive:boolean; absActive:boolean; surface:SurfaceId }
 // Car pose origin on the road under its centre. Speed in m/s; steer/angles in radians. ID 0 is the player.
 export interface RaceState { phase:Phase; settings:Settings; drivers:Driver[]; camera:CameraMode; elapsed:number; lap:number; lapTime:number; bestLap:number; sectors:number[]; lastSectors:number[]; delta:number; lights:number; tc:number; abs:number; muted:boolean; autopilot:boolean; fps:number; backend:string; peakSpeedKmh:number; maxGearReached:number; maxBrakeTempC:number; nanDetected:boolean }
-export interface VehicleRig { root:TransformNode; update(driver:Driver,dt:number):void; dispose():void }
+export interface VehicleRig { root:TransformNode; update(driver:Driver,dt:number,driverView?:boolean):void; dispose():void }
 export type BuildVehicle = (scene:Scene,chassis:Settings['chassis'],livery:number,number:string)=>Promise<VehicleRig>;
 export interface UiActions { configure(patch:Partial<Settings>):void; start():void; resume():void; garage():void; restart():void; cycleTc():void; cycleAbs():void; toggleMute():void }
 export interface AudioRig { unlock():void; update(state:RaceState):void; dispose():void }
