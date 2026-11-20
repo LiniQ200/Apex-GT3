@@ -128,8 +128,8 @@ export function controls(
     // A pre-green touch must not leak into the next phase, even for that first batch.
     const axes = state.phase === 'race' ? fingers : undefined;
     const demand = axes?.steer ?? (Math.abs(analog) > 0.09 ? analog : key),
-      sens = 1 / (1 + d.speed * 0.043);
-    const right = demand * sens - (demand === 0 ? headingRate * Math.min(0.14, d.speed * 0.004) : 0);
+      sens = 1 / (1 + d.speed * 0.036);
+    const right = demand * sens - (demand === 0 ? headingRate * Math.min(0.16, d.speed * 0.0045) : 0);
     if (
       typeof pad?.vibrationActuator?.playEffect === 'function' &&
       state.phase === 'race' &&

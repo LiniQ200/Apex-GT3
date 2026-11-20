@@ -332,7 +332,7 @@ export function createCircuit(): Circuit {
   const samples = Array.from({ length: n }, (_, i) => at(i * step));
   const bins = spatialIndex(samples);
   validate(samples, bins, step);
-  function nearest(x: number, z: number) {
+  function nearestToRef(x: number, z: number, out: { s: number; d: number; surface: SurfaceId }) {
     let best = Infinity,
       bestS = 0;
     const visit = (i: number) => {
@@ -351,11 +351,8 @@ export function createCircuit(): Circuit {
       cz = Math.floor(z / cell);
     for (let a = cx - 1; a <= cx + 1; a++)
       for (let b = cz - 1; b <= cz + 1; b++) bins.get(key(a, b))?.forEach(visit);
-    // Only arbitrary queries far outside the physical barriers need a global search.
     if (best > cell * cell) for (let i = 0; i < n; i++) visit(i);
     let p = at(bestS);
-    // Project the 1 m chord estimate back onto the analytic spline. A second
-    // Newton step matters at a tightly curved apex on the far edge of the runoff.
     for (let j = 0; j < 2; j++) {
       const rx = x - p.x,
         rz = z - p.z,
@@ -367,7 +364,13 @@ export function createCircuit(): Circuit {
       p = at(p.s + Math.max(-step, Math.min(step, correction)));
     }
     const d = (x - p.x) * Math.cos(p.yaw) - (z - p.z) * Math.sin(p.yaw);
-    return { s: p.s, d, surface: surface(p, d, length) };
+    out.s = p.s;
+    out.d = d;
+    out.surface = surface(p, d, length);
+    return out;
   }
-  return { length, samples, at, nearest };
+  function nearest(x: number, z: number) {
+    return nearestToRef(x, z, { s: 0, d: 0, surface: 'asphalt' });
+  }
+  return { length, samples, at, nearest, nearestToRef };
 }

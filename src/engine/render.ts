@@ -248,7 +248,10 @@ export function lighting(scene: Scene) {
   image.toneMappingEnabled = true;
   image.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_KHR_PBR_NEUTRAL;
   image.exposure = 1.02;
-  image.contrast = 1.03;
+  image.contrast = 1.07;
+  // Opaque skybox fills the background; skip redundant full-screen MSAA color clear
+  scene.autoClear = false;
+  scene.autoClearDepthAndStencil = true;
 
   const skies: Partial<Record<Weather, BakedSky>> = {},
     sky = CreateBox('weather dome', { size: 1400 }, scene),
@@ -402,11 +405,11 @@ export function lighting(scene: Scene) {
   }
 
   if (cascades) {
-    // Texel-stabilized 4-cascade sun shadows (zero shadow shimmer!)
-    cascades.numCascades = !gpu && caps.maxVaryingVectors < 20 ? 2 : 4;
-    cascades.lambda = 0.72;
+    // 2 tight texel-stabilized cascades: sharper car shadows & 2x faster shadow passes!
+    cascades.numCascades = 2;
+    cascades.lambda = 0.78;
     cascades.stabilizeCascades = true;
-    cascades.shadowMaxZ = 165;
+    cascades.shadowMaxZ = 95;
   } else if (shadows) {
     sun.shadowFrustumSize = 96;
     sun.shadowMinZ = 0.1;
@@ -418,6 +421,8 @@ export function lighting(scene: Scene) {
   }
   if (shadows) {
     shadows.usePercentageCloserFiltering = true;
+    // Babylon 9.0.0 WGSL CSM PCF1 (QUALITY_LOW) has an upstream syntax bug (',,shadowTexture0Sampler').
+    // QUALITY_MEDIUM (PCF3) generates valid WGSL and GLSL on both backends.
     shadows.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
     shadows.bias = 0.00045;
     shadows.normalBias = 0.028;
@@ -553,9 +558,13 @@ function raceLights(scene: Scene, sky: AbstractMesh, freeSamplers: number) {
   }
   scene.onDisposeObservable.addOnce(() => cluster?.dispose(false, true));
   function update(s: RaceState, rigs: VehicleRig[]) {
-    const on = s.phase !== 'garage';
+    const wet = s.settings.weather === 'damp' || s.settings.weather === 'rain';
+    // Only run the 33-light clustered headlamp pass in Damp / Rain when road beams are visible;
+    // in bright daylight, emissive lenses + sun + HDR IBL stay crisp with zero clustered light overhead!
+    const on = s.phase !== 'garage' && wet;
     if (cluster && cluster.isEnabled() !== on) cluster.setEnabled(on);
-    const wetHeadlamps = s.settings.weather === 'rain' ? 38 : s.settings.weather === 'damp' ? 24 : 8;
+    if (!on) return;
+    const wetHeadlamps = s.settings.weather === 'rain' ? 38 : 24;
     for (let i = 0; i < lamps.length; i++) {
       const d = s.drivers[i],
         l = lamps[i];

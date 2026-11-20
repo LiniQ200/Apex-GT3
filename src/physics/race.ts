@@ -345,8 +345,8 @@ export function createRace(
     if (state.phase !== 'lights' && state.phase !== 'race') return;
     if (state.phase === 'lights') {
       countdown += STEP;
-      state.lights = Math.min(5, 1 + Math.floor(countdown / 0.72));
-      if (countdown > 4.25) {
+      state.lights = Math.min(5, 1 + Math.floor(countdown / 0.54));
+      if (countdown > 3.15) {
         state.phase = 'race';
         state.lights = 0;
       }

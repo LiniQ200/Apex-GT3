@@ -39,8 +39,8 @@ function mapped(scene: Scene, name: string) {
         gammaSpace: color,
         useSRGBBuffer: color,
       });
-      // Pin-sharp 16x anisotropic filtering on every road, kerb, pit-lane, bark & terrain map
-      t.anisotropicFilteringLevel = 16;
+      // Pin-sharp 16x anisotropic filtering on road/kerb/concrete albedo & normals; 8x on secondary ORM/metal
+      t.anisotropicFilteringLevel = color || name === 'asphalt' || name === 'kerb' || name === 'concrete' ? 16 : 8;
       return t;
     };
   m.albedoTexture = map('albedo');
@@ -208,11 +208,12 @@ export function roadMaterials(scene: Scene, c: Circuit, surfaceGrid?: TrackSurfa
   road.detailMap.diffuseBlendLevel = 0.85;
   road.detailMap.isEnabled = true;
 
-  // Cross-backend WGSL + GLSL Hex-Grid Stochastic Anti-Tiling & Porous Wetness plugins
+  // Cross-backend WGSL + GLSL Hex-Grid Stochastic Anti-Tiling on hero asphalt;
+  // single-tap porous wetness darkening on grass/gravel/concrete for high frame rates!
   const roadPlugin = new PorousSurfacePlugin(road, { isRoad: true, hexBomb: true, trackStateTexture: stateTex });
-  const grassPlugin = new PorousSurfacePlugin(grass, { isRoad: false, hexBomb: true });
-  const gravelPlugin = new PorousSurfacePlugin(gravel, { isRoad: false, hexBomb: true });
-  const concretePlugin = new PorousSurfacePlugin(concrete, { isRoad: false, hexBomb: true });
+  const grassPlugin = new PorousSurfacePlugin(grass, { isRoad: false, hexBomb: false });
+  const gravelPlugin = new PorousSurfacePlugin(gravel, { isRoad: false, hexBomb: false });
+  const concretePlugin = new PorousSurfacePlugin(concrete, { isRoad: false, hexBomb: false });
 
   kerb.albedoTexture!.level = 1.16;
   grass.albedoColor = new Color3(0.54, 0.90, 0.62);

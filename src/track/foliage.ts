@@ -146,10 +146,10 @@ export async function createBotanicalForest(scene: Scene) {
         if (m.material instanceof PBRMaterial) {
           mat = m.material.clone(`venue.biome.${prop}.${list.length}`);
           mat.maxSimultaneousLights = 2;
-          // Upgrade every texture on the photogrammetry model to 16x anisotropic trilinear + crisp ALPHATEST
+          // Keep crisp trilinear 8x AF on background biome props to save mobile/integrated GPU bandwidth
           for (const t of mat.getActiveTextures()) {
             if (t instanceof Texture) {
-              t.anisotropicFilteringLevel = 16;
+              t.anisotropicFilteringLevel = 8;
               t.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
             }
           }
@@ -177,7 +177,7 @@ export async function createBotanicalForest(scene: Scene) {
   const tints = ['#f7f4e9', '#fffbe8', '#e5efe7', '#ebe4cb'].map((c) =>
     Color3.FromHexString(c).toLinearSpace(),
   );
-  const trackCell = 210;
+  const trackCell = 360;
 
   function plantTree(species: Species, pos: Vec, scale: Vec, yaw: number, tint: number, ridge = false) {
     const x = Math.floor((pos[0] + 160) / (ridge ? 520 : trackCell));
@@ -206,8 +206,8 @@ export async function createBotanicalForest(scene: Scene) {
     const templates = biomeTemplates.get(prop);
     if (!templates?.length) return;
     const vIdx = Math.abs(variant) % templates.length;
-    const x = Math.floor((pos[0] + 160) / 240);
-    const z = Math.floor((pos[2] + 100) / 240);
+    const x = Math.floor((pos[0] + 160) / 480);
+    const z = Math.floor((pos[2] + 100) / 480);
     const key = `venue.biome.${prop}.${vIdx}@${x}:${z}`;
     let cell = propCells.get(key);
     if (!cell) {
@@ -244,11 +244,11 @@ export async function createBotanicalForest(scene: Scene) {
       if (cell.ridge) {
         makeBatch(`${cell.species}_LOD1`, name, false);
       } else {
-        const near = makeBatch(`${cell.species}_LOD0`, name, true);
+        const near = makeBatch(`${cell.species}_LOD0`, name, false);
         const far = makeBatch(`${cell.species}_LOD1`, `${name}.lod1`, false);
         if (near && far) {
           const radius = near.getBoundingInfo().boundingSphere.radiusWorld;
-          near.addLODLevel(radius + 115, far);
+          near.addLODLevel(radius + 68, far);
           far.setEnabled(false);
         }
       }
@@ -264,8 +264,7 @@ export async function createBotanicalForest(scene: Scene) {
       mesh.isPickable = false;
       mesh.receiveShadows = true;
       mesh.thinInstanceSetBuffer('matrix', Float32Array.from(cell.matrices), 16, true);
-      const casts = cell.prop === 'rock_moss';
-      mesh.metadata = { trackShadowCaster: casts, shadowCaster: casts };
+      mesh.metadata = { trackShadowCaster: false, shadowCaster: false };
       mesh.freezeWorldMatrix();
     }
   }

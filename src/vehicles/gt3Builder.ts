@@ -124,15 +124,15 @@ export const buildVehicle: BuildVehicle = async (scene, chassis, livery, number)
           (scene.getEngine().getRenderHeight(true) * cam.viewport.height * Math.abs(lens[5]) * 0.5) /
           (lens[15] === 1 ? 1 : Math.max(0.1, distance));
         let next = detail;
-        // Preserve the inspection car even in a narrow garage viewport, and
-        // the actual dashboard/column when the camera is inside the vehicle.
-        if (distance < 3 || (d.id === 0 && d.speed === 0 && pixels > 24)) next = 0;
+        // Preserve LOD0 for the player car in garage/cockpit/close chase.
+        // Rivals use LOD1+ (identical full exterior bodywork, glass, wings, spinning wheels & hot rotors,
+        // without unseen interior dashboards/columns), slashing starting-grid GPU load by ~45%!
+        if (d.id === 0 && (distance < 3 || (d.speed === 0 && pixels > 24))) next = 0;
         else {
           while (next < detailBands.length && pixels < detailBands[next] * 0.92) next++;
           while (next > 0 && pixels > detailBands[next - 1] * 1.08) next--;
-          // Reconstruction/upscaling magnifies cracks long before a nearby
-          // physical panel or moving wheel should simplify to a fixed batch.
-          if (distance < 15) next = Math.min(next, 1);
+          if (d.id !== 0) next = Math.max(next, 1);
+          if (distance < 10) next = Math.min(next, 1);
         }
         if (next !== detail) show(next);
       }

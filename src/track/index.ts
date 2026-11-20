@@ -27,8 +27,8 @@ export async function buildTrack(
         : key === 'absorber'
           ? m.paint
           : m[key];
-    const casts = key === 'wall' || key === 'pitWall' || key === 'absorber';
-    const sector = casts ? 250 : key === 'gravel' ? 480 : 0;
+    const casts = key === 'pitWall';
+    const sector = key === 'wall' || key === 'pitWall' || key === 'absorber' ? 320 : key === 'gravel' ? 480 : 0;
     const mesh = publish(scene, 'circuit.' + name, meshes[key], material, casts, sector);
     if (key === 'grass' || key === 'road') mesh.subdivide(12);
     else if (key === 'paint') mesh.subdivide(4);

@@ -371,7 +371,8 @@ async function boot() {
   });
   function frame(seconds: number, fps: number) {
     if (graphicsLost) return;
-    const dt = Math.max(0.001, Math.min(0.25, seconds)),
+    // Cap physics catch-up to 100 ms (12 ticks/frame) so a GPU hiccup never snowballs into stutter
+    const dt = Math.max(0.001, Math.min(0.1, seconds)),
       u = input.sample(dt);
     if (!busy && !frozen && race && (s.phase === 'lights' || s.phase === 'race')) {
       acc += dt;

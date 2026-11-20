@@ -64,6 +64,7 @@ export interface Circuit {
   samples: TrackPoint[];
   at(s: number, d?: number): TrackPoint;
   nearest(x: number, z: number): { s: number; d: number; surface: SurfaceId };
+  nearestToRef?(x: number, z: number, out: { s: number; d: number; surface: SurfaceId }): { s: number; d: number; surface: SurfaceId };
 }
 
 export interface CollisionMesh {

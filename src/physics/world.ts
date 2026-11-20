@@ -256,6 +256,8 @@ export async function createWorld(
     const contacts = new j.VehicleConstraintCallbacksJS();
     const hitX = new Float64Array(4).fill(NaN),
       hitZ = new Float64Array(4);
+    const nearScratch = { s: 0, d: 0, surface: 'asphalt' as Driver['surface'] };
+    const sampleScratch: SurfaceSample = { wetness: 0, rubberGrip: 0.35, dryingGroove: 0, marbles: 0 };
     const car: Car = {
       body,
       vehicle,
@@ -294,27 +296,33 @@ export async function createWorld(
             dPos = 0,
             hw = 8;
           if (kind === 'road' || kind === 'runoff' || kind === 'kerb') {
-            const near = circuit.nearest(x, z);
-            surf = kind === 'kerb' ? 'kerb' : near.surface;
-            sPos = near.s;
-            dPos = near.d;
-            hw = circuit.samples.length > 0 ? circuit.at(sPos).halfWidth : 8;
-            hitX[i] = x;
-            hitZ[i] = z;
+            // Skip redundant nearest() when wheel is stationary (grid lights / parked)
+            if (x !== hitX[i] || z !== hitZ[i]) {
+              const near = circuit.nearestToRef ? circuit.nearestToRef(x, z, nearScratch) : circuit.nearest(x, z);
+              nearScratch.s = near.s;
+              nearScratch.d = near.d;
+              nearScratch.surface = near.surface;
+              hitX[i] = x;
+              hitZ[i] = z;
+            }
+            surf = kind === 'kerb' ? 'kerb' : nearScratch.surface;
+            sPos = nearScratch.s;
+            dPos = nearScratch.d;
+            hw = circuit.samples.length > 0 ? circuit.samples[Math.floor(sPos) % circuit.samples.length]?.halfWidth ?? 8 : 8;
           }
-          const sample: SurfaceSample = grid
-            ? grid.sample(sPos, dPos, hw)
-            : {
-                wetness: car.weather === 'rain' ? 0.85 : car.weather === 'damp' ? 0.45 : 0,
-                rubberGrip: drySample.rubberGrip,
-                dryingGroove: 0,
-                marbles: 0,
-              };
+          if (grid) {
+            grid.sampleToRef(sPos, dPos, hw, sampleScratch);
+          } else {
+            sampleScratch.wetness = car.weather === 'rain' ? 0.85 : car.weather === 'damp' ? 0.45 : 0;
+            sampleScratch.rubberGrip = drySample.rubberGrip;
+            sampleScratch.dryingGroove = 0;
+            sampleScratch.marbles = 0;
+          }
           car.patchIsGravel[i] = surf === 'gravel';
           car.patchGrip[i] = computeWheelGrip(
             car.compound,
             surf,
-            sample,
+            sampleScratch,
             car.tireTemp[i] ?? 75,
             car.tireWear[i] ?? 1,
             car.speed,

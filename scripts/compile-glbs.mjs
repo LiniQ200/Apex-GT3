@@ -18,7 +18,7 @@ const io = new NodeIO();
 async function optimizeKit(rawPath, outPath) {
   const doc = await io.read(rawPath);
   await doc.transform(dedup(), weld({ tolerance: 1e-4 }), prune({ keepAttributes: true }));
-  // Verify every single mesh retains TEXCOORD_0 and COLOR_0 so foliage/architecture never lose UVs or AO!
+  // Verify every single mesh retains TEXCOORD_0 so foliage/architecture never lose UVs!
   for (const m of doc.getRoot().listMeshes()) {
     for (const p of m.listPrimitives()) {
       if (!p.getAttribute('TEXCOORD_0')) throw Error(`${rawPath} mesh ${m.getName()} missing TEXCOORD_0`);

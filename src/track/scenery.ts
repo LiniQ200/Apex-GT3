@@ -280,7 +280,7 @@ async function loadTracksideKit(scene: Scene, mats: ReturnType<typeof roadMateri
 
   function placeKit(part: string, pos: Vec, yaw = 0, scale: Vec = [1, 1, 1], pitch = 0, roll = 0) {
     if (!geoms.has(part)) return;
-    const cellSz = part === 'ArmcoPost' || part === 'CatchFencePost' || part === 'TireStack' ? 280 : 420;
+    const cellSz = 680;
     const key = `${part}@${Math.floor((pos[0] + 160) / cellSz)}:${Math.floor((pos[2] + 100) / cellSz)}`;
     let cell = cells.get(key);
     if (!cell) {
@@ -295,6 +295,7 @@ async function loadTracksideKit(scene: Scene, mats: ReturnType<typeof roadMateri
     cell.matrices.push(...m.m);
   }
 
+  const shadowKitParts = new Set(['StartGantry', 'GrandstandBay', 'PitGarageBay', 'PitBoxPortal']);
   function finishKit() {
     for (const [key, cell] of cells) {
       const g = geoms.get(cell.part);
@@ -306,7 +307,7 @@ async function loadTracksideKit(scene: Scene, mats: ReturnType<typeof roadMateri
       mesh.isPickable = false;
       mesh.receiveShadows = true;
       mesh.thinInstanceSetBuffer('matrix', Float32Array.from(cell.matrices), 16, true);
-      const casts = cell.part !== 'ArmcoPost' && cell.part !== 'CatchFencePost';
+      const casts = shadowKitParts.has(cell.part);
       mesh.metadata = { trackShadowCaster: casts, shadowCaster: casts };
       mesh.freezeWorldMatrix();
     }

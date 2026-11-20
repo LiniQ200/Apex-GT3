@@ -118,8 +118,8 @@ export class TrackSurfaceGrid {
     return weatherSurfaceTempC[this.weather];
   }
 
-  /** Fast O(1) bilinear lookup for 120 Hz physics per wheel. */
-  sample(s: number, d: number, halfWidth: number): SurfaceSample {
+  /** Zero-allocation O(1) bilinear lookup for 120 Hz physics per wheel. */
+  sampleToRef(s: number, d: number, halfWidth: number, out: SurfaceSample): SurfaceSample {
     const v = (((s % this.circuit.length) + this.circuit.length) % this.circuit.length) / this.circuit.length;
     const u = clamp01(0.5 + d / (2 * Math.max(4, halfWidth)));
     const sf = v * STATE_SECTORS - 0.5;
@@ -132,15 +132,19 @@ export class TrackSurfaceGrid {
     const i10 = this.idx(s0, l0 + 1);
     const i01 = this.idx(s0 + 1, l0);
     const i11 = this.idx(s0 + 1, l0 + 1);
-    const bilerp = (arr: Float32Array) =>
-      (arr[i00] * (1 - fl) + arr[i10] * fl) * (1 - fs) +
-      (arr[i01] * (1 - fl) + arr[i11] * fl) * fs;
-    return {
-      wetness: bilerp(this.wetness),
-      rubberGrip: bilerp(this.rubber),
-      dryingGroove: bilerp(this.drying),
-      marbles: bilerp(this.marbles),
-    };
+    const w00 = (1 - fl) * (1 - fs),
+      w10 = fl * (1 - fs),
+      w01 = (1 - fl) * fs,
+      w11 = fl * fs;
+    out.wetness = this.wetness[i00] * w00 + this.wetness[i10] * w10 + this.wetness[i01] * w01 + this.wetness[i11] * w11;
+    out.rubberGrip = this.rubber[i00] * w00 + this.rubber[i10] * w10 + this.rubber[i01] * w01 + this.rubber[i11] * w11;
+    out.dryingGroove = this.drying[i00] * w00 + this.drying[i10] * w10 + this.drying[i01] * w01 + this.drying[i11] * w11;
+    out.marbles = this.marbles[i00] * w00 + this.marbles[i10] * w10 + this.marbles[i01] * w01 + this.marbles[i11] * w11;
+    return out;
+  }
+
+  sample(s: number, d: number, halfWidth: number): SurfaceSample {
+    return this.sampleToRef(s, d, halfWidth, { wetness: 0, rubberGrip: 0, dryingGroove: 0, marbles: 0 });
   }
 
   /**

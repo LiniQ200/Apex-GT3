@@ -132,24 +132,24 @@ export function createCameras(
       if (shot === 'chase' || shot === 'reverse') {
         const back = shot === 'reverse';
         const desired = car.yaw + (back ? Math.PI : 0);
-        followYaw = cut ? desired : followYaw + wrapAngle(desired - followYaw) * (1 - Math.exp(-9.5 * dt));
+        followYaw = cut ? desired : followYaw + wrapAngle(desired - followYaw) * (1 - Math.exp(-10.5 * dt));
         const fs = Math.sin(followYaw),
           fc = Math.cos(followYaw),
-          dist = 6.35 + speed * 0.6 + pull,
-          height = 2.3 + speed * 0.2 + dip;
+          dist = 5.85 + speed * 0.55 + pull * 0.85,
+          height = 2.08 + speed * 0.16 + dip;
         camera.position.set(
           car.x - fs * dist + fc * side,
           car.y + height + (back ? -1 : 1) * dist * Math.sin(car.pitch) * 0.85,
           car.z - fc * dist - fs * side,
         );
         target.set(
-          car.x + fs * 2.35,
-          car.y + 0.97 - (back ? -1 : 1) * 2.35 * Math.sin(car.pitch),
-          car.z + fc * 2.35,
+          car.x + fs * 2.55,
+          car.y + 0.94 - (back ? -1 : 1) * 2.55 * Math.sin(car.pitch),
+          car.z + fc * 2.55,
         );
-        camera.fov = lens.at(0.86 + 0.11 * speed, 6, dt, cut);
+        camera.fov = lens.at(0.84 + 0.12 * speed, 6.5, dt, cut);
         camera.setTarget(target);
-        camera.rotation.z = clamp(car.roll * 0.2 + side * 0.025, -0.03, 0.03);
+        camera.rotation.z = clamp(car.roll * 0.22 + side * 0.025, -0.03, 0.03);
         return;
       }
       if (shot === 'hood' || shot === 'cockpit') {

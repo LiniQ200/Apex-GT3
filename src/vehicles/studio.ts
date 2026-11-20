@@ -18,7 +18,7 @@ export const corners = ['FL', 'FR', 'RL', 'RR'] as const;
 // Pixels/metre. The close race skin keeps the original panels without the
 // inspection interior. Batch wheel assemblies below ~30 pixels per tyre.
 // The last two transitions widen only the emissive sample, not the chassis.
-export const detailBands = [250, 42, 10, 5, 2.6] as const;
+export const detailBands = [360, 72, 18, 7, 3.2] as const;
 export type Slot =
   | 'paint'
   | 'trim'

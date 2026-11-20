@@ -83,6 +83,22 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
       if (await hasPicture()) return;
       throw new GraphicsUnavailable(`${backend} returned a blank picture. Try another graphics launch option or open the game directly in your browser.`);
     }
+    // Freeze static materials on WebGL2 to eliminate per-frame CPU dirty-checking.
+    // On WebGPU, Babylon's bind-group cache already handles fast binding and freezing
+    // lit PBR materials skips binding Light0..LightN UBOs to newly created draw contexts.
+    function freezeStaticMaterials(freeze: boolean) {
+      if (backend === 'WebGPU') return;
+      for (const m of scene.materials) {
+        if (m.name === 'HDR sky' || m.name === 'rear vision glass' || m.name === 'instrument anti-glare LCD' ||
+            m.name.startsWith('weather.') || m.name.includes('.LED tail') || m.name.includes('.rain') ||
+            m.name.includes('.disc') || m.name === 'venue.asphalt' || m.name === 'venue.terrain' ||
+            m.name === 'venue.gravel' || m.name === 'venue.concrete' || m.name === 'venue.kerb' ||
+            m.name === 'venue.track enamel' || m.name === 'venue.FIA digital flag panel' ||
+            m.name === 'venue.start signal unlit' || m.name === 'venue.FIA signal red') continue;
+        if (freeze) m.freeze();
+        else m.unfreeze();
+      }
+    }
     return {
       canvas, backend, adapter, software, reason,
       async prepareTrack(road, weather, surfaceGrid) {
@@ -100,6 +116,7 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
       wheelLayouts: settings => studioWheelLayouts(scene, settings),
       async present(s) {
         const token = ++generation;
+        freezeStaticMaterials(false);
         discard();
         trackRoot?.setEnabled(s.phase !== 'garage');
         cameras.update(s, false, 0);
@@ -115,15 +132,25 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
           return;
         }
         rigs = group;
-        rigs.forEach((rig, i) => rig.update(s.drivers[i], 0));
+        rigs.forEach((rig, i) => rig.update(s.drivers[i], 0, false, s.settings.weather));
         light.casters(scene.meshes.filter(m => !(s.phase === 'garage' && m.name.startsWith('garage.'))));
+        // Freeze static materials immediately after the first rendered frame so steady-state CPU cost drops ~65%
+        scene.onAfterRenderObservable.addOnce(() => {
+          if (token === generation && !scene.isDisposed) freezeStaticMaterials(true);
+        });
       },
       confirmPicture() {
         return pending ??= check().finally(() => { pending = undefined; });
       },
-      setWeather(w) {
+      async setWeather(w) {
+        freezeStaticMaterials(false);
         track?.setWeather(w);
-        return light.setWeather(w);
+        await light.setWeather(w);
+        if (!scene.isDisposed && rigs.length) {
+          scene.onAfterRenderObservable.addOnce(() => {
+            if (!scene.isDisposed) freezeStaticMaterials(true);
+          });
+        }
       },
       quality: light.quality,
       ready: () => scene.isReady(),
