@@ -4,11 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "npm run fetch:assets -- --ensure",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
+    "prebuild": "npm run fetch:assets -- --ensure",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
     "fetch:assets": "node scripts/fetch-assets.mjs",
+    "postfetch:assets": "node scripts/bake-environments.mjs",
     "verify:orb": "node scripts/verify-orb.mjs"
   },
   "dependencies": {

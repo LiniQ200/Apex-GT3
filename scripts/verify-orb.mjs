@@ -22,20 +22,6 @@ const browser = await chromium.launch({ args }),
     deviceScaleFactor: 1,
   });
 if (!gpu) await context.addInitScript(() => Object.defineProperty(navigator, 'gpu', { value: undefined }));
-// Opt into the same profile as a desktop card without changing the renderer
-// or faking its limits. This checks production shaders, never hardware FPS.
-if (full && gpu)
-  await context.addInitScript(() => {
-    for (const k of ['description', 'architecture'])
-      Object.defineProperty(GPUAdapterInfo.prototype, k, { get: () => 'desktop-profile-test' });
-  });
-if (full && !gpu)
-  await context.addInitScript(() => {
-    const original = WebGL2RenderingContext.prototype.getParameter;
-    WebGL2RenderingContext.prototype.getParameter = function (parameter) {
-      return parameter === 0x9246 ? 'desktop-profile-test' : original.call(this, parameter);
-    };
-  });
 const page = await context.newPage();
 page.setDefaultTimeout(120000);
 const faults = [],
@@ -51,7 +37,7 @@ page.on('console', (m) => {
   if (
     m.type() === 'error' ||
     (m.type() === 'warning' &&
-      /GPUValidationError|destroyed texture|invalid (?:renderpipeline|commandbuffer)|error while parsing WGSL/i.test(m.text()))
+      /GPUValidationError|destroyed texture|invalid (?:renderpipeline|commandbuffer)|error while parsing WGSL|GL_INVALID_|incomplete framebuffer|feedback loop formed/i.test(m.text()))
   ) {
     faults.push(m.text());
     console.log('renderer error', m.text().slice(0, 680));
@@ -122,15 +108,17 @@ try {
   await page.evaluate(() => document.fonts.ready);
   const garage = await state();
   assert.equal(garage.backend, gpu ? 'WebGPU' : 'WebGL2');
+  assert.equal(garage.settings.graphics, 'high');
   await shot('01-garage-showroom');
   if (gpu || full) {
     await page.goto(new URL('?autostart=1&qa=1', url).href);
     await ready('race');
     assert.equal((await state()).backend, garage.backend);
-    if (full) assert.equal((await state()).software, false);
     const name = garage.backend.toLowerCase();
     await shot(`${name}-grid`);
     if (full) {
+      await page.evaluate(() => window.__GT3_DEBUG__.setCamera('cockpit'));
+      await shot(`${name}-cockpit`);
       await page.evaluate(() => {
         window.__GT3_DEBUG__.setWeather('damp');
         window.__GT3_DEBUG__.setCamera('hood');
@@ -321,12 +309,12 @@ try {
     'models/ferrari_base.glb',
     'models/car_concept_base.glb',
     'draco/draco_decoder.wasm',
-    'skies/golden_hour.hdr',
+    'skies/golden_hour.env',
     ...['asphalt', 'concrete', 'terrain', 'kerb'].flatMap((s) =>
-      ['diff', 'rough', 'ao', 'nor_gl'].map((k) => `${s}/${k}.jpg`),
+      ['albedo', 'normal', 'orm'].map((k) => `${s}/${k}.jpg`),
     ),
   ];
-  if (!gpu || full) required.push('skies/overcast_race.hdr');
+  if (!gpu || full) required.push('skies/overcast_race.env');
   for (const file of required) assert.ok(assets.has('/assets/' + file), `Missing request ${file}`);
   assert.deepEqual(faults, []);
   console.log(

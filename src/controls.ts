@@ -1,5 +1,6 @@
 import type { RaceState } from './types';
 import { clamp, type Controls } from './physics/world';
+import { createTouchControls } from './ui/touch';
 
 export function controls(
   canvas: HTMLCanvasElement,
@@ -7,6 +8,8 @@ export function controls(
   command: (key: string) => void,
   onInterrupt?: () => void,
 ) {
+  const hud = canvas.ownerDocument.querySelector<HTMLElement>('[data-section="hud"]');
+  const touch = hud && navigator.maxTouchPoints > 0 ? createTouchControls(hud, state, command) : undefined;
   const keys = new Set<string>(),
     mapped = [
       'KeyW',
@@ -59,7 +62,7 @@ export function controls(
     )
       return;
     if (!driving() && e.code !== (state.phase === 'paused' ? 'Escape' : 'KeyM')) return;
-    if (e.code === 'Space' && e.target instanceof HTMLButtonElement) return;
+    if (e.code === 'Space' && e.target instanceof HTMLElement && e.target.closest('button,summary')) return;
     e.preventDefault();
     keys.add(e.code);
     if (!e.repeat) command(e.code);
@@ -69,6 +72,7 @@ export function controls(
   }
   function clear() {
     keys.clear();
+    touch?.clear();
     previousYaw = state.drivers[0]?.yaw ?? 0;
     headingRate = 0;
     syncButtons = true;
@@ -88,6 +92,7 @@ export function controls(
   canvas.addEventListener('pointerdown', focusCanvas);
   const button = (pad: Gamepad | undefined, i: number) => pad?.buttons[i]?.value ?? 0;
   function sample(dt: number): Controls {
+    const fingers = touch?.sync();
     const focused = !document.hidden && document.hasFocus();
     const pad = focused && (driving() || state.phase === 'paused') ? activePad() : undefined;
     const blocked = !focused || (pad && !!document.querySelector('dialog[open]'));
@@ -116,7 +121,10 @@ export function controls(
       Math.atan2(Math.sin(d.yaw - previousYaw), Math.cos(d.yaw - previousYaw)) / Math.max(0.015, dt);
     previousYaw = d.yaw;
     headingRate += (clamp(rate, -3, 3) - headingRate) * Math.min(1, dt * 9);
-    const demand = Math.abs(analog) > 0.09 ? analog : key,
+    // A batch of physics ticks can turn the lights green between input samples.
+    // A pre-green touch must not leak into the next phase, even for that first batch.
+    const axes = state.phase === 'race' ? fingers : undefined;
+    const demand = axes?.steer ?? (Math.abs(analog) > 0.09 ? analog : key),
       sens = 1 / (1 + d.speed * 0.043);
     const right = demand * sens - (demand === 0 ? headingRate * Math.min(0.14, d.speed * 0.004) : 0);
     if (
@@ -135,20 +143,21 @@ export function controls(
         .catch(() => {});
     }
     return {
-      throttle: Math.max(Number(keys.has('KeyW') || keys.has('ArrowUp')), button(pad, 7)),
-      brake: Math.max(Number(keys.has('KeyS') || keys.has('ArrowDown')), button(pad, 6)),
+      throttle: Math.max(Number(keys.has('KeyW') || keys.has('ArrowUp')), button(pad, 7), axes?.throttle ?? 0),
+      brake: Math.max(Number(keys.has('KeyS') || keys.has('ArrowDown')), button(pad, 6), axes?.brake ?? 0),
       right,
-      handbrake: Math.max(Number(keys.has('Space')), button(pad, 0)),
+      handbrake: Math.max(Number(keys.has('Space')), button(pad, 0), axes?.handbrake ?? 0),
       draft: 0,
     };
   }
   return {
     sample,
-    lookBack: () => keys.has('KeyB'),
+    lookBack: () => keys.has('KeyB') || !!touch?.sync().rear,
     clear,
     interrupt,
     dispose() {
       clear();
+      touch?.dispose();
       window.removeEventListener('keydown', keydown);
       window.removeEventListener('keyup', keyup);
       window.removeEventListener('blur', interrupt);

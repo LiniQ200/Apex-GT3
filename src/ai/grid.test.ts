@@ -2,14 +2,14 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { createCircuit } from '../track/circuit';
 import { makeRoad } from '../track/road';
-import { createRace, driver } from '../physics/race';
+import { createRaceState, driver } from '../physics/race';
 import { createWorld, STEP } from '../physics/world';
 import { createPilots } from './grid';
 
 test('a GT3 waits behind a blocked road and passes on whichever side reopens', async () => {
   const track = createCircuit(),
     world = await createWorld(track, makeRoad(track).colliders);
-  const { state } = createRace(track, world, 'test');
+  const state = createRaceState('test');
   state.settings.weather = 'damp';
   const park = { throttle: 0, brake: 1, right: 0, handbrake: 1, draft: 0 };
   try {
@@ -50,7 +50,7 @@ test('a GT3 waits behind a blocked road and passes on whichever side reopens', a
 test('switching off the player’s TC and ABS leaves the opponents’ assists active', async () => {
   const track = createCircuit(), world = await createWorld(track, makeRoad(track).colliders);
   try {
-    const { state } = createRace(track, world, 'test');
+    const state = createRaceState('test');
     state.tc = state.abs = 0;
     state.settings.weather = 'damp';
     const grid = state.drivers = [driver(0, 0), driver(1, 1)];

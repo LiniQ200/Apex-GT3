@@ -1,6 +1,7 @@
 import type { Scene } from '@babylonjs/core/scene';
 import type { Material } from '@babylonjs/core/Materials/material';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
+import { SubMesh } from '@babylonjs/core/Meshes/subMesh';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
 import { CreateCylinder } from '@babylonjs/core/Meshes/Builders/cylinderBuilder';
@@ -12,11 +13,11 @@ import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import type { Circuit } from '../types';
-import { wallOffset, trapSide } from './circuit';
+import { sprintGrid, wallOffset, trapSide } from './circuit';
 import { geometry, vertex, quad, point, type Geometry, type Vec } from './road';
 import { plain, signage, randomSource, type roadMaterials } from './materials';
 
-export function publish(scene: Scene, name: string, g: Geometry, mat: Material, casts = false) {
+function meshData(g: Geometry) {
   const vd = new VertexData();
   vd.positions = g.positions;
   vd.indices = g.indices.slice();
@@ -30,14 +31,41 @@ export function publish(scene: Scene, name: string, g: Geometry, mat: Material, 
   vd.uvs = g.uvs;
   if (g.uv2.length) vd.uvs2 = g.uv2;
   vd.colors = g.colors;
-  const mesh = new Mesh(name, scene);
-  vd.applyToMesh(mesh);
-  mesh.material = mat;
-  mesh.isPickable = false;
-  mesh.receiveShadows = true;
-  mesh.metadata = { trackShadowCaster: casts, shadowCaster: casts };
-  mesh.freezeWorldMatrix();
-  return mesh;
+  return vd;
+}
+
+export function publish(scene: Scene, name: string, g: Geometry, mat: Material, casts = false, sectorMetres = 0) {
+  const first = new Mesh(name, scene);
+  meshData(g).applyToMesh(first);
+  // Shadow render lists cull *meshes*, not just submeshes. Give separated
+  // sections their own bounds but share a single set of GPU buffers/normals.
+  for (let start = 0, sector = 0; start < g.indices.length; sector++) {
+    let end = g.indices.length;
+    if (sectorMetres) {
+      const origin = 3 * g.indices[start];
+      for (let i = start + 3; i < end; i += 3) {
+        const p = 3 * g.indices[i];
+        if ((g.positions[p] - g.positions[origin]) ** 2 + (g.positions[p + 2] - g.positions[origin + 2]) ** 2 > sectorMetres ** 2) {
+          end = i;
+          break;
+        }
+      }
+    }
+    const mesh = start ? new Mesh(`${name}.${sector}`, scene) : first;
+    if (start) first.geometry!.applyToMesh(mesh);
+    if (end - start < g.indices.length) {
+      mesh.releaseSubMeshes();
+      const range = SubMesh.CreateFromIndices(0, start, end - start, mesh);
+      mesh.setBoundingInfo(range.getBoundingInfo());
+    }
+    mesh.material = mat;
+    mesh.isPickable = false;
+    mesh.receiveShadows = true;
+    mesh.metadata = { trackShadowCaster: casts, shadowCaster: casts };
+    mesh.freezeWorldMatrix();
+    start = end;
+  }
+  return first;
 }
 
 // A single rigid 2 m kerbstone cannot exactly follow both verges in a tight bend.
@@ -106,7 +134,8 @@ export function publishKerbs(scene: Scene, g: Geometry, mat: Material) {
   }
 }
 
-function floor(x: number, z: number) {
+const hillsX = -1340, hillsZ = -1460, hillStep = 43;
+function hillSample(x: number, z: number) {
   const edge = Math.max(0, Math.abs(x - 620) - 729, Math.abs(z - 160) - 605);
   const gain = 1 - Math.exp((-edge * edge) / 55000);
   const wide =
@@ -117,23 +146,40 @@ function floor(x: number, z: number) {
     5 * Math.sin(x * 0.032 + z * 0.019);
   return -2.36 + gain * wide;
 }
-function hills(scene: Scene, mat: Material) {
+// Props stand on the rendered triangles, not the analytic surface between
+// survey samples (the two can differ by metres on the distant ridgeline).
+function floor(x: number, z: number) {
+  const x0 = hillsX + Math.floor((x - hillsX) / hillStep) * hillStep;
+  const z0 = hillsZ + Math.floor((z - hillsZ) / hillStep) * hillStep;
+  const u = (x - x0) / hillStep, v = (z - z0) / hillStep;
+  const diagonal = (1 - Math.max(u, v)) * hillSample(x0, z0) + Math.min(u, v) * hillSample(x0 + hillStep, z0 + hillStep);
+  return diagonal + (u > v ? (u - v) * hillSample(x0 + hillStep, z0) : (v - u) * hillSample(x0, z0 + hillStep));
+}
+function hills(scene: Scene, grass: PBRMaterial) {
   const g = geometry(),
     w = 93,
     h = 83;
   for (let j = 0; j < h; j++)
     for (let i = 0; i < w; i++) {
-      const x = -1340 + i * 43,
-        z = -1460 + j * 43,
-        y = floor(x, z),
+      const x = hillsX + i * hillStep,
+        z = hillsZ + j * hillStep,
+        y = hillSample(x, z),
         tone = 0.62 + 0.1 * Math.cos(z * 0.013 + x * 0.019) + 0.04 * Math.sin(z * 0.038 - x * 0.022);
       vertex(g, [x, y, z], [x / 17, z / 17], [tone * 1.12, tone, tone * 0.87]);
-      if (i && j) {
-        const a = j * w + i;
-        quad(g, a - w - 1, a - 1, a, a - w);
-      }
     }
-  publish(scene, 'terrain.rolling Apennine foothills', g, mat);
+  // Same grid and shared normals, but four compact patches instead of one
+  // 4 km bounding box. Don't pay for kerbside normal/ORM detail on the horizon.
+  for (let z = 0; z < h - 1; z += 41)
+    for (let x = 0; x < w - 1; x += 46)
+      for (let j = z + 1; j <= z + 41; j++)
+        for (let i = x + 1; i <= x + 46; i++) {
+          const a = j * w + i;
+          quad(g, a - w - 1, a - 1, a, a - w);
+        }
+  const mat = plain(scene, 'distant pasture', 0.96);
+  mat.albedoTexture = grass.albedoTexture;
+  mat.albedoColor = grass.albedoColor;
+  publish(scene, 'terrain.rolling Apennine foothills', g, mat).subdivide(4);
 }
 
 // Batches are spatially partitioned so a view down the pit straight doesn't submit
@@ -143,7 +189,12 @@ function batches(scene: Scene, base: Material, glass: Material, crowd: Material)
   const groups = new Map<string, Group>();
   const palette = new Map<string, Color3>();
   function place(kind: string, pos: Vec, size: Vec, color: string, yaw = 0, pitch = 0, roll = 0) {
-    const region = Math.floor((pos[0] + 160) / 340) + ':' + Math.floor((pos[2] + 100) / 340),
+    // Low-poly, sparse poles and terrace cards don't merit a draw per tiny
+    // cluster. Keep the dense architecture and foreground trees in tighter cells.
+    const cell = kind === 'mast' || kind === 'crowd' ? 850 : 340;
+    const region = kind.startsWith('ridge ')
+      ? Math.floor((pos[0] + 470) / 600) + ':' + Math.sign(pos[2])
+      : Math.floor((pos[0] + 160) / cell) + ':' + Math.floor((pos[2] + 100) / cell),
       key = kind + '@' + region;
     let group = groups.get(key);
     if (!group) {
@@ -177,21 +228,49 @@ function batches(scene: Scene, base: Material, glass: Material, crowd: Material)
     );
   }
   function finish() {
+    // Each spatial batch needs its own instance buffers, not a re-tessellation
+    // of the same trunk and crowns. Reuse their four CPU-side vertex datasets.
+    const trees = new Map<string, VertexData>();
+    function plant(name: string, species: string, distant: boolean) {
+      const key = species + (distant ? '.silhouette' : '');
+      let data = trees.get(key);
+      if (!data) {
+        data = treeData(species === 'cypress', distant);
+        trees.set(key, data);
+      }
+      const mesh = new Mesh(name, scene);
+      data.applyToMesh(mesh);
+      return mesh;
+    }
     for (const [key, g] of groups) {
-      const name = 'venue.' + key;
+      const name = 'venue.' + key,
+        ridge = g.kind.startsWith('ridge '),
+        species = ridge ? g.kind.slice(6) : g.kind,
+        isTree = species === 'cypress' || species === 'pine';
       let m: Mesh;
-      if (g.kind === 'cypress' || g.kind === 'pine') m = tree(scene, name, g.kind === 'cypress', base);
+      if (isTree) m = plant(name, species, ridge);
       else if (g.kind === 'crowd') m = CreatePlane(name, { size: 1 }, scene);
       else if (g.kind === 'mast')
         m = CreateCylinder(name, { height: 1, diameterTop: 0.76, diameterBottom: 1, tessellation: 8 }, scene);
       else m = CreateBox(name, { size: 1 }, scene);
-      m.material = g.kind === 'glass' ? glass : g.kind === 'crowd' ? crowd : base;
-      m.isPickable = false;
-      m.receiveShadows = true;
-      m.thinInstanceSetBuffer('matrix', Float32Array.from(g.matrix), 16, true);
-      m.thinInstanceSetBuffer('color', Float32Array.from(g.color), 4, true);
-      m.metadata = { trackShadowCaster: g.kind !== 'crowd', shadowCaster: g.kind !== 'crowd' };
-      m.freezeWorldMatrix();
+      const transforms = Float32Array.from(g.matrix), colors = Float32Array.from(g.color);
+      const bind = (mesh: Mesh, casts: boolean) => {
+        mesh.material = g.kind === 'glass' ? glass : g.kind === 'crowd' ? crowd : base;
+        mesh.isPickable = false;
+        mesh.receiveShadows = true;
+        mesh.thinInstanceSetBuffer('matrix', transforms, 16, true);
+        mesh.thinInstanceSetBuffer('color', colors, 4, true);
+        mesh.metadata = { trackShadowCaster: casts, shadowCaster: casts };
+        mesh.freezeWorldMatrix();
+      };
+      bind(m, g.kind !== 'crowd');
+      if (isTree && !ridge) {
+        const far = plant(name + '.silhouette', species, true);
+        bind(far, false); // the shadow pass selects the master's LOD; don't submit it twice
+        // Babylon measures to the batch centre. Keep full crowns while even
+        // the nearest edge is within 180 m; both LODs keep every planting.
+        m.addLODLevel(180 + m.getBoundingInfo().boundingSphere.radiusWorld, far);
+      }
     }
   }
   return { place, rod, finish };
@@ -199,10 +278,10 @@ function batches(scene: Scene, base: Material, glass: Material, crowd: Material)
 
 // Irregular, layered broad crowns and narrow Lombardy cypresses, with the trunk and
 // foliage sharing a single vertex-colour batch. Not camera-facing tree billboards.
-function tree(scene: Scene, name: string, cypress: boolean, mat: Material) {
+function treeData(cypress: boolean, distant: boolean) {
   const g = geometry(),
     rand = randomSource(cypress ? 74 : 268),
-    n = 10;
+    n = distant ? 7 : 10;
   function shape(cx: number, cz: number, profile: number[][], leaf: boolean) {
     let prev: number[] = [];
     for (let i = 0; i < profile.length; i++) {
@@ -231,6 +310,15 @@ function tree(scene: Scene, name: string, cypress: boolean, mat: Material) {
         }
       prev = row;
     }
+  }
+  if (distant) {
+    // One umbrella or spire hull replaces the intersecting canopy lobes, but
+    // retains their skirt, outline, colour gradient and the daylight under it.
+    shape(0, 0, [[0, 0.04], [0.62, 0.03]], false);
+    shape(0, 0, cypress
+      ? [[0.055, 0.02], [0.18, 0.34], [0.51, 0.46], [0.81, 0.26], [1, 0.015]]
+      : [[0.44, 0.02], [0.60, 0.42], [0.76, 0.54], [0.90, 0.42], [1, 0.055]], true);
+    return meshData(g);
   }
   shape(
     0,
@@ -287,7 +375,7 @@ function tree(scene: Scene, name: string, cypress: boolean, mat: Material) {
       );
     }
   }
-  return publish(scene, name, g, mat, true);
+  return meshData(g);
 }
 
 function spectators(scene: Scene) {
@@ -431,17 +519,16 @@ export function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof r
     box(p.x, p.y + h, p.z, ww, 0.012, len, col, p.yaw, -p.slope, p.bank);
   }
   // Ten staggered two-sided start boxes, yellow timing dashes, chessboard and line.
-  for (let i = -6; i < 12; i++) {
-    const s = 6 * i,
-      d = i % 2 === 0 ? -2.8 : 2.8;
+  for (const { s, d } of sprintGrid) {
     strip(s + 2.56, d, 2.68, 0.14, chalk);
     for (const dx of [-1.29, 1.29]) strip(s + 1.75, d + dx, 0.1, 1.63, chalk);
     strip(s + 2.73, d, 1.14, 0.12, brass);
   }
-  strip(60.0, 0, 15.7, 0.21, chalk);
+  // Timing uses the survey seam; the start-light gantry is further up the grid.
+  strip(0, 0, 15.7, 0.21, chalk);
   for (let j = 0; j < 2; j++)
     for (let i = 0; i < 32; i++)
-      strip(60.47 + j * 0.43, -7.75 + i * 0.5, 0.5, 0.44, (i + j) % 2 ? '#e9e8dc' : '#303436');
+      strip(0.47 + j * 0.43, -7.75 + i * 0.5, 0.5, 0.44, (i + j) % 2 ? '#e9e8dc' : '#303436');
 
   // Main tribuna. The underside of the projecting canopy, roof lattice, terrace
   // risers, aisle breaks and spectators each read at a different chase-camera range.
@@ -705,8 +792,8 @@ export function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof r
       h = 8 + rnd() * 8,
       w = 4 + rnd() * 6;
     place(
-      i % 4 === 0 ? 'cypress' : 'pine',
-      [x, floor(x, z) - 0.4, z],
+      i % 4 === 0 ? 'ridge cypress' : 'ridge pine',
+      [x, floor(x, z) - 0.08, z],
       [i % 4 === 0 ? w * 0.26 : w, h, i % 4 === 0 ? w * 0.29 : w],
       '#abb8a1',
       rnd() * 6.28,

@@ -8,6 +8,10 @@ import { teams } from '../types';
 import type { Studio } from '../vehicles/studio';
 
 type Ctx = CanvasRenderingContext2D;
+// UV addresses in the two tiny material strips used on consolidated race geometry.
+// Painted panels, glazing, numbered doors and varying light emitters never use this strip.
+export const hardwareSlots = ['trim', 'metal', 'tire', 'rim', 'caliper', 'badge', 'carbon', 'foil'] as const;
+
 export function pbr(scene: Scene, name: string, hex: string, metallic: number, roughness: number) {
   const m = new PBRMaterial('GT3.' + name, scene);
   m.albedoColor = Color3.FromHexString(hex).toLinearSpace();
@@ -286,7 +290,34 @@ function sharedMaterials(scene: Scene) {
   flame.unlit = false;
   const core = pbr(scene, 'exhaust inner cone', '#84bbff', 0, 0.8);
   core.emissiveColor.set(0.6, 1.7, 4);
-  return { trim, metal, glass, headlight, tire, rim, caliper, badge, carbon, foil, discMap, flame, core };
+  const surfaces = { trim, metal, tire, rim, caliper, badge, carbon, foil };
+  const hardware = pbr(scene, 'race hardware', '#ffffff', 1, 1);
+  const strip = (name: string, color: (s: (typeof hardwareSlots)[number]) => string) => {
+    const t = canvasMap(scene, name, hardwareSlots.length, 1, (c) =>
+      hardwareSlots.forEach((s, i) => {
+        c.fillStyle = color(s);
+        c.fillRect(i, 0, 1, 1);
+      }),
+    );
+    t.updateSamplingMode(Texture.NEAREST_SAMPLINGMODE);
+    t.anisotropicFilteringLevel = 1;
+    return t;
+  };
+  hardware.albedoTexture = strip('hardware finishes', (s) =>
+    s === 'carbon' || s === 'foil' ? '#34393b' : surfaces[s].albedoColor.toGammaSpace().toHexString(),
+  );
+  hardware.metallicTexture = strip('hardware roughness and metalness', (s) => {
+    const m = surfaces[s];
+    return `rgb(255,${Math.round(m.roughness! * 255)},${Math.round(m.metallic! * 255)})`;
+  });
+  hardware.metallicTexture.gammaSpace = false;
+  hardware.useRoughnessFromMetallicTextureAlpha = false;
+  hardware.useRoughnessFromMetallicTextureGreen = true;
+  hardware.useMetallnessFromMetallicTextureBlue = true;
+  const shadowHull = new StandardMaterial('GT3.opaque caster', scene);
+  shadowHull.disableLighting = true;
+  shadowHull.backFaceCulling = false;
+  return { ...surfaces, glass, headlight, discMap, flame, core, hardware, shadowHull };
 }
 interface Bank {
   common: ReturnType<typeof sharedMaterials>;
@@ -322,12 +353,11 @@ export function carFinish(scene: Scene, idx: number, number: string) {
   return { ...bank.common, paint, panel };
 }
 
-export function contactShadow(scene: Scene, s: Studio) {
+export function contactShadow(scene: Scene, s: Studio, footprint: { width: number; height: number }) {
   const b = banks.get(scene)!;
   let m = b.shadows.get(s.source);
   if (m) return m;
-  const w = 2.6,
-    h = 5.12,
+  const { width: w, height: h } = footprint,
     pix = 256;
   const map = canvasMap(scene, 'five contact patches ' + s.source, pix, 512, (c) => {
     const ellipse = (x: number, y: number, rx: number, ry: number, opacity: number) => {
@@ -342,8 +372,8 @@ export function contactShadow(scene: Scene, s: Studio) {
       c.fillRect(-1, -1, 2, 2);
       c.restore();
     };
-    ellipse(0, 0, 1.2, 2.5, 0.62);
-    for (const p of s.hubs) ellipse(p.x, p.z, 0.31, 0.45, 0.83);
+    ellipse(0, 0, s.fit.width * 0.58, s.fit.length * 0.54, 0.62);
+    s.hubs.forEach((p, i) => ellipse(p.x, p.z, s.tireWidths[i] * 0.5 + 0.17, s.radii[i] + 0.08, 0.83));
   });
   map.hasAlpha = true;
   m = new StandardMaterial('contact attenuation ' + s.source, scene);

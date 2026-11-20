@@ -1,6 +1,7 @@
-import { defaults, teams, type Circuit, type Driver, type RaceState } from '../types';
+import { defaults, teams, type Circuit, type Driver, type GridWheelLayouts, type RaceState } from '../types';
 import { createWorld, factoryAssists, STEP, type Controls } from './world';
 import { createPilots } from '../ai/grid';
+import { sprintGrid } from '../track/circuit';
 
 export const SPRINT_LAPS = 3;
 
@@ -53,6 +54,7 @@ export function driver(id: number, livery: number): Driver {
     steer: 0,
     slip: 0,
     wheelAngle: 0,
+    wheelAngles: [0, 0, 0, 0],
     wheelCompressionM: [0.03, 0.03, 0.03, 0.03],
     tireTempC: [72, 72, 72, 72],
     brakeTempC: [170, 170, 154, 154],
@@ -61,8 +63,8 @@ export function driver(id: number, livery: number): Driver {
     surface: 'asphalt',
   };
 }
-export function createRace(track: Circuit, world: Awaited<ReturnType<typeof createWorld>>, backend: string) {
-  const state: RaceState = {
+export function createRaceState(backend: string): RaceState {
+  return {
     phase: 'garage',
     settings: { ...defaults },
     drivers: [driver(0, 0)],
@@ -85,6 +87,9 @@ export function createRace(track: Circuit, world: Awaited<ReturnType<typeof crea
     maxBrakeTempC: 0,
     nanDetected: false,
   };
+}
+
+export function createRace(track: Circuit, world: Awaited<ReturnType<typeof createWorld>>, state: RaceState) {
   const { pilot, reset: resetPilots } = createPilots(track),
     stopped = { throttle: 0, brake: 1, right: 0, handbrake: 1, draft: 0 };
   // Roughly 10 m timing gates, including the exact three sector boundaries.
@@ -97,8 +102,8 @@ export function createRace(track: Circuit, world: Awaited<ReturnType<typeof crea
     reference: number[] = [],
     splits: number[] = [0];
   const stalled: number[] = [];
-  const gridLane = (id: number) => state.settings.mode === 'hotlap' ? 0 : id % 2 === 0 ? -2.8 : 2.8;
-  function start(skipLights = false) {
+  const grid = () => state.settings.mode === 'sprint' ? sprintGrid : [{ s: 0, d: 0 }];
+  function start(skipLights = false, wheelLayouts?: GridWheelLayouts) {
     world.clear();
     resetPilots();
     stalled.length = 0;
@@ -123,11 +128,10 @@ export function createRace(track: Circuit, world: Awaited<ReturnType<typeof crea
       maxBrakeTempC: 170,
       nanDetected: false,
     });
-    for (let i = 0; i < (state.settings.mode === 'sprint' ? 10 : 1); i++) {
+    for (const [i, box] of grid().entries()) {
       const d = driver(i, (i + state.settings.livery) % 5);
-      const startS = 6 * i;
-      d.distance = startS;
-      world.add(d, startS, gridLane(i));
+      d.distance = box.s;
+      world.add(d, box.s, box.d, wheelLayouts?.(i));
       state.drivers.push(d);
       stalled.push(0);
     }
@@ -163,7 +167,7 @@ export function createRace(track: Circuit, world: Awaited<ReturnType<typeof crea
     return true;
   }
   function resetPlayer() {
-    if (state.phase === 'lights') return resetAtStation(state.drivers[0], gridLane(0));
+    if (state.phase === 'lights') return resetAtStation(state.drivers[0], grid()[0].d);
     return state.phase === 'race' && resetAtStation(state.drivers[0], 0, true);
   }
   function advance(player: Controls) {

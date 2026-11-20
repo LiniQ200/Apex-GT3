@@ -1,6 +1,8 @@
 import { raceOrder, SPRINT_LAPS } from '../physics/race';
 import { teams, type Circuit, type Driver, type RaceState } from '../types';
 import { circuitGraphic, icon, insignia } from './graphics';
+import { createPitwall } from './pitwall';
+import './pitwall.css';
 
 export function clock(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return '–:––.–––';
@@ -49,16 +51,18 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
   el.innerHTML = `<div class="ax-tower ax-glass"><header class="ax-tv-title">${insignia}<b>LIVE TIMING</b><span class="ax-live-dot"></span></header>
     <div class="ax-tower-cols ax-micro"><span>POS</span><span>DRIVER</span><span>INTERVAL</span></div><ol data-rows></ol></div>
     <section class="ax-laptime ax-glass"><div class="ax-lap-line"><div class="ax-lap-n"><small>LAP</small><b data-v="lap">01/03</b></div><strong data-v="clock">0:00.000</strong></div>
-      <div class="ax-sectors">${[1, 2, 3].map((i) => `<span data-sector>S${i}</span>`).join('')}<output data-v="delta">Δ —</output></div><div class="ax-delta"><i></i></div></section>
+      <div class="ax-sectors">${[1, 2, 3].map((i) => `<span data-sector>S${i}</span>`).join('')}<output data-v="delta">Δ —</output></div><div class="ax-delta"><i></i></div>
+      <div class="ax-pitwall" role="group" aria-label="Race engineer" hidden></div></section>
     <div class="ax-feed"><b>${insignia} APEX <i>RACECAST</i></b><span class="ax-camera-id"><i class="ax-live-dot"></i><span data-v="camera"></span></span></div>
     <div class="ax-lights"><div class="ax-lamps">${'<b></b>'.repeat(5)}</div><span class="ax-micro">START PROCEDURE</span></div>
     <div class="ax-radar ax-glass"><header class="ax-mini-head">${icon('map')}<b>TRACK MAP</b><span>VD'O</span></header>${outline.svg}<div class="ax-map-caption"><i></i> YOU <span>• &nbsp; FIELD</span></div></div>
-    <section class="ax-dash ax-glass"><header class="ax-mini-head"><b>MoTeC <em>C127</em></b><span data-v="hardware"></span></header><div class="ax-shift">${Array.from({ length: 15 }, (_, i) => `<i style="--led:${i < 6 ? '#66e5a0' : i < 11 ? '#ffe063' : '#ff573c'}"></i>`).join('')}</div>
+    <details class="ax-dash ax-glass" open><summary class="ax-mini-head" aria-label="Driving telemetry" title="Show or hide driving telemetry"><b>MoTeC <em>C127</em></b><span data-v="hardware"></span>${icon('down')}</summary><div class="ax-shift">${Array.from({ length: 15 }, (_, i) => `<i style="--led:${i < 6 ? '#66e5a0' : i < 11 ? '#ffe063' : '#ff573c'}"></i>`).join('')}</div>
       <div class="ax-readout"><div class="ax-gear"><span>GEAR</span><b data-v="gear">N</b></div><div class="ax-speed"><strong data-v="speed">0</strong><button data-unit title="Switch speed unit" aria-label="Switch speed unit">KM/H</button></div><div class="ax-revs"><b data-v="rpm">0</b><span>RPM</span></div></div>
       <div class="ax-pedals"><label>THR<i><b data-pedal></b></i></label><label>BRK<i><b data-pedal></b></i></label></div>
       <div class="ax-thermal-head ax-micro"><span>WHEEL TELEMETRY</span><span>TYRE / DISC °C</span></div><div class="ax-thermals">${['FL', 'FR', 'RL', 'RR'].map((w) => `<div class="ax-wheel"><span>${w}</span><b></b><small></small><i><s></s></i></div>`).join('')}</div>
-      <div class="ax-assists"><button data-action="cycleTc" title="Cycle traction control"></button><button data-action="cycleAbs" title="Cycle anti-lock braking"></button><span data-v="surface"></span></div></section>`;
+      <div class="ax-assists"><button data-action="cycleTc" title="Cycle traction control"></button><button data-action="cycleAbs" title="Cycle anti-lock braking"></button><span data-v="surface"></span></div></details>`;
 
+  const pitwall = createPitwall(el.querySelector<HTMLElement>('.ax-pitwall')!, circuit);
   const readouts = Object.fromEntries(
     Array.from(el.querySelectorAll<HTMLElement>('[data-v]'), (n) => [n.dataset.v!, n]),
   );
@@ -76,6 +80,8 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
   }));
   const sectorNodes = Array.from(el.querySelectorAll<HTMLElement>('[data-sector]'));
   const lightPlate = el.querySelector<HTMLElement>('.ax-lights')!;
+  const dash = el.querySelector('details')!, expanded = { cockpit: false, external: true };
+  let instruments: keyof typeof expanded = 'external';
   const tc = el.querySelector<HTMLButtonElement>('[data-action="cycleTc"]')!,
     abs = el.querySelector<HTMLButtonElement>('[data-action="cycleAbs"]')!;
   const rowsEl = el.querySelector('ol')!,
@@ -96,6 +102,7 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     activeLap = 0,
     lastSplitColors = ['', '', ''];
   function reset() {
+    pitwall.reset();
     timing.clear();
     lastTime = -1;
     activeLap = 0;
@@ -117,9 +124,16 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
   }
   function update(s: RaceState) {
     const player = s.drivers.find((d) => d.id === 0);
-    if (!player) return;
+    if (!player) { pitwall.reset(); return; }
+    const layout = s.camera === 'cockpit' ? 'cockpit' : 'external';
+    if (instruments !== layout) {
+      expanded[instruments] = dash.open;
+      dash.open = expanded[layout];
+      instruments = layout;
+    }
     if (s.elapsed < lastTime) reset();
     lastTime = s.elapsed;
+    pitwall.update(s, player, mph);
     const order = raceOrder(s.drivers);
     for (const d of order) {
       let sensor = timing.get(d.id);

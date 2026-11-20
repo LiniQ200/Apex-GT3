@@ -28,7 +28,7 @@ function session(mode: Settings['mode'] = 'sprint') {
     control(d: Driver, cmd: Controls) { d.throttle = cmd.throttle; d.brake = cmd.brake; },
     reset(d, s = d.s, lane = 0) { resets.push(d.id); Object.assign(d, track.at(s, lane), { d: lane }); },
     step() {}, shift() {}, dispose() {}, freeMemory: () => 0,
-  }, 'timing test');
+  }, rules.createRaceState('timing test'));
   race.state.settings.mode = mode;
   race.start(true);
   function move(ticks: number, ...end: number[]) {

@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
     <meta name="theme-color" content="#0b1012" />
     <title>APEX GT3 // WEBGPUSIM</title>
     <link
@@ -40,26 +40,77 @@
         position: absolute;
         inset: 0;
         display: grid;
-        place-content: center;
-        text-align: center;
-        background: linear-gradient(120deg, #11171a, #090c0d);
-        font: 700 12px/2.5 monospace;
-        letter-spacing: 0.2em;
+        align-content: space-between;
+        padding: clamp(20px,5vw,80px);
+        overflow: auto;
+        isolation: isolate;
+        background: #10181a;
+        color: #f3f2e9;
+        font: 600 11px/1.5 ui-monospace,monospace;
       }
-      #loading b {
-        font: italic 900 46px Arial;
-        letter-spacing: -0.06em;
+      #loading::before {
+        content: ''; position: absolute; inset: 0 0 0 20%; z-index: -2;
+        background: url('/race-plate.webp') 50% 50% / cover no-repeat;
       }
-      #loading span {
-        color: #ffae58;
+      #loading::after {
+        content: ''; position: absolute; inset: 0; z-index: -1;
+        background: linear-gradient(90deg,#10181a 12%,#10181af2 27%,#10181a6b 55%,transparent 76%),linear-gradient(0deg,#080e11ee,transparent 39%,transparent 72%,#10181aaa);
+      }
+      .boot-id, .boot-kicker { letter-spacing: .18em; text-transform: uppercase; }
+      .boot-id { display: flex; align-items: center; gap: 12px; }
+      .boot-id i { width: 28px; height: 8px; transform: skewX(-22deg); background: #ff613c; }
+      .boot-card { max-width: min(530px,88vw); padding: 15px 0; }
+      .boot-kicker { color: #d3d7cb; }
+      .boot-card h1 { margin: 6px 0; font: italic 800 clamp(58px,8.6vw,142px)/.92 AxCond,'Arial Narrow',sans-serif; letter-spacing: -.05em; }
+      .boot-card h1 em { color: #ff613c; font: inherit; }
+      .boot-card p { margin: 14px 0 0; font: 600 clamp(18px,2vw,30px)/1.1 AxCond,sans-serif; }
+      .boot-footer { letter-spacing: .07em; }
+      .boot-rule { display: block; position: relative; width: min(255px,78vw); height: 2px; overflow: hidden; margin-bottom: 9px; background: #58635f; }
+      .boot-rule::after { content:''; position: absolute; width: 48%; height: 100%; background: #ff7048; animation: pit-signal 1.6s ease-in-out infinite alternate; }
+      @keyframes pit-signal { from { left: 0; } to { left: 52%; } }
+      #progress { display: block; max-width: min(540px,85vw); overflow-wrap: anywhere; }
+      #loading nav { display: flex; flex-wrap: wrap; gap: 0 24px; margin-top: 4px; }
+      #loading a { display: inline-flex; align-items: center; min-height: 44px; color: #dddcd2; text-underline-offset: 4px; font-size: 13px; }
+      #loading a:focus-visible { outline: 2px solid #ff865a; outline-offset: 4px; }
+      #loading a:hover { color: white; }
+      /* Works even if the entry module never arrives. Slow downloads can still finish. */
+      #loading:not(.interrupted) .boot-retry { visibility: hidden; animation: offer-retry 0s 15s forwards; }
+      @keyframes offer-retry { to { visibility: visible; } }
+      .interrupted .boot-rule::after { animation: none; width: 100%; }
+      @media (max-aspect-ratio: 4/5) {
+        #loading { align-content: end; gap: 22px; padding-bottom: max(7vh,env(safe-area-inset-bottom)); }
+        #loading::before { inset: 0 0 30% 0; background-position: 51% center; }
+        #loading::after { background: linear-gradient(0deg,#10181a 22%,#10181acc 44%,transparent 78%); }
+        .boot-id { position: absolute; top: 5vh; left: 20px; text-shadow: 0 1px 4px #000; }
+        .boot-card { padding: 0; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-rule::after { animation: none; }
       }
     </style>
+    <script>
+      // A missing entry module can't run the game's normal startup error handler.
+      window.addEventListener('error', function (event) {
+        if (!(event.target instanceof HTMLScriptElement) || event.target.type !== 'module') return;
+        function interrupted() {
+          document.getElementById('loading').classList.add('interrupted');
+          document.getElementById('progress').textContent = 'The game files could not be loaded. Check your connection and retry launch.';
+        }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', interrupted, { once: true });
+        else interrupted();
+      }, true);
+    </script>
   </head>
   <body>
     <canvas id="scene" tabindex="0" aria-label="Racing simulator"></canvas>
     <main id="ui"></main>
-    <div id="loading" role="status">
-      <b>APEX GT3</b><span>VALLE D’ORO • PADDOCK</span><small id="progress">INITIALIZING SIMULATOR</small>
+    <div id="loading">
+      <div class="boot-id"><i></i> APEX Motorsport &nbsp;/&nbsp; Race weekend</div>
+      <div class="boot-card"><div class="boot-kicker">Circuit 01 &nbsp;/&nbsp; Italia</div><h1>APEX <em>GT3</em></h1><p>Autodromo Valle d’Oro</p></div>
+      <div class="boot-footer"><i class="boot-rule"></i><span id="progress" role="status">Opening the paddock</span>
+        <nav class="boot-retry" aria-label="Launch options"><a href="">Retry launch</a><a id="alternate-renderer" href="?renderer=webgl2">Launch with WebGL 2</a></nav>
+        <noscript>Enable JavaScript to drive.</noscript>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -706,6 +706,7 @@
   font-size: 13px;
   margin-top: 12px;
 }
+.ax-offline-link { color: #ffb38f; text-underline-offset: 3px; }
 .ax-finish {
   display: flex;
   flex-direction: column;
@@ -1064,7 +1065,17 @@
 }
 .ax-dash > .ax-mini-head {
   margin: 0 -8px 5px;
+  pointer-events: auto;
+  cursor: pointer;
+  list-style: none;
 }
+.ax-dash > summary::-webkit-details-marker { display: none; }
+.ax-dash > summary:hover { background: #33413c; }
+.ax-dash > summary:focus-visible { outline: 2px solid #ffad89; outline-offset: 2px; }
+.ax-dash:not([open]) { padding-bottom: 0; }
+.ax-dash:not([open]) > summary { margin-bottom: 0; border-bottom: 0; }
+.ax-dash:not([open]) > summary svg { transform: rotate(180deg); }
+@media (pointer: coarse) { .ax-dash > summary { min-height: 44px; } }
 .ax-shift {
   display: flex;
   gap: 3px;

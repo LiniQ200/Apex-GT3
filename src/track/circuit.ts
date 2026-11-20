@@ -1,5 +1,8 @@
 import type { Circuit, SurfaceId, TrackPoint } from '../types';
 
+// Back to front: the player occupies the last box, at the lap-timing seam.
+export const sprintGrid = Array.from({ length: 10 }, (_, i) => ({ s: 6 * i, d: i % 2 ? 2.8 : -2.8 }));
+
 // Survey coordinates in metres. North (+Z) is the direction of the start straight.
 const survey = [
   [0, 0],

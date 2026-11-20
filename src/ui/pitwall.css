@@ -1,0 +1,49 @@
+.ax-pitwall {
+  --call: #b9cec6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 4px 7px 4px 5px;
+  border-top: 1px solid var(--rule);
+  border-left: 2px solid var(--call);
+  background: #131b1db3;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.ax-pitwall[data-cue='lift'] { --call: #f3cc89; }
+.ax-pitwall[data-cue='brake'] { --call: #ff895e; }
+.ax-pitwall[data-cue='spotter'] { --call: #ffcf76; background: #2a241ae8; }
+.ax-pitwall > svg {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 22px;
+  color: var(--call);
+}
+.ax-pw-bend { fill: none; stroke: currentColor; stroke-width: 2.25; }
+.ax-pitwall[data-side='left'] .ax-pw-bend { transform: scaleX(-1); transform-origin: center; }
+.ax-pw-cars, .ax-pitwall[data-cue='spotter'] .ax-pw-bend { display: none; }
+.ax-pitwall[data-cue='spotter'] .ax-pw-cars { display: inline; fill: var(--chalk); }
+.ax-pw-left, .ax-pw-right { fill: #665a42; }
+.ax-pitwall[data-side='left'] .ax-pw-left,
+.ax-pitwall[data-side='right'] .ax-pw-right,
+.ax-pitwall[data-side='both'] .ax-pw-cars :not(:first-child) { fill: var(--call); }
+.ax-pw-body { flex: 1; min-width: 0; }
+.ax-pw-meta, .ax-pw-line { display: flex; align-items: baseline; justify-content: space-between; gap: 3px; }
+.ax-pw-meta {
+  margin-bottom: 2px;
+  color: #bac6bf;
+  font: 8px/1.1 var(--mono);
+}
+.ax-pw-meta b { color: var(--call); font-weight: 600; }
+.ax-pw-line strong { color: var(--chalk); font: 600 17px/1 var(--cond); }
+.ax-pitwall:is([data-cue='brake'], [data-cue='lift'], [data-cue='spotter']) strong { color: var(--call); }
+.ax-pw-line > span { color: #e4e9df; font: 10px/1 var(--mono); }
+.ax-pitwall:is([data-cue='turn'], [data-cue='spotter']) .ax-pw-line > span { font-size: 8px; letter-spacing: 0.04em; }
+
+@media (max-width: 760px), (max-height: 470px) {
+  .ax-pitwall { height: 34px; gap: 4px; padding: 3px 5px 3px 3px; }
+  .ax-pitwall > svg { flex-basis: 15px; width: 15px; height: 18px; }
+  .ax-pw-meta { font-size: 7.5px; }
+  .ax-pw-line strong { font-size: 15px; }
+}

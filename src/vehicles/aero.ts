@@ -1,11 +1,6 @@
-import type { Scene } from '@babylonjs/core/scene';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
-import { Mesh } from '@babylonjs/core/Meshes/mesh';
-import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
-import type { Material } from '@babylonjs/core/Materials/material';
-import type { TransformNode } from '@babylonjs/core/Meshes/transformNode';
-import type { carFinish } from '../materials/carFinish';
-import type { Studio } from './studio';
+import type { KitFit } from './kitFit';
+import type { Part, Studio } from './studio';
 
 type Point = [number, number, number];
 type Pair = [number, number];
@@ -19,7 +14,18 @@ class Shell {
   n: number[] = [];
   uv: number[] = [];
   idx: number[] = [];
+  constructor(private readonly fit?: KitFit) {}
+  private mount([x, y, z]: Point): Point {
+    return this.fit ? [x * this.fit.across, this.fit.height(y), z * this.fit.along] : [x, y, z];
+  }
   face(points: Point[], inside: Vector3, uv?: Pair[]) {
+    this.metricFace(
+      points.map((p) => this.mount(p)),
+      vec(this.mount([inside.x, inside.y, inside.z])),
+      uv,
+    );
+  }
+  private metricFace(points: Point[], inside: Vector3, uv?: Pair[]) {
     const a = vec(points[0]),
       b = vec(points[1]),
       c = vec(points[2]);
@@ -40,14 +46,20 @@ class Shell {
       else this.idx.push(base, base + i, base + i + 1);
   }
   loft(a: Point[], b: Point[]) {
+    this.metricLoft(
+      a.map((p) => this.mount(p)),
+      b.map((p) => this.mount(p)),
+    );
+  }
+  private metricLoft(a: Point[], b: Point[]) {
     const center = Vector3.Zero();
     for (const p of [...a, ...b]) center.addInPlaceFromFloats(...p);
     center.scaleInPlace(0.5 / a.length);
-    this.face(a, center);
-    this.face(b, center);
+    this.metricFace(a, center);
+    this.metricFace(b, center);
     for (let i = 0; i < a.length; i++) {
       const j = (i + 1) % a.length;
-      this.face([a[i], a[j], b[j], b[i]], center);
+      this.metricFace([a[i], a[j], b[j], b[i]], center);
     }
   }
   side(x: number, thick: number, yz: Pair[]) {
@@ -63,6 +75,10 @@ class Shell {
     );
   }
   rod(a: Point, b: Point, r: number, r2 = r, segments = 8) {
+    // Locate the mounts first, then turn a genuinely round rod/pipe in metres.
+    // A final nonuniform scale on the kit mesh would squeeze its cross-section.
+    a = this.mount(a);
+    b = this.mount(b);
     const axis = vec(b).subtract(vec(a)).normalize(),
       up = Math.abs(axis.y) > 0.9 ? Vector3.Right() : Vector3.Up();
     const u = Vector3.Cross(axis, up).normalize(),
@@ -74,44 +90,40 @@ class Shell {
       rings[0].push([a[0] + dir.x * r, a[1] + dir.y * r, a[2] + dir.z * r]);
       rings[1].push([b[0] + dir.x * r2, b[1] + dir.y * r2, b[2] + dir.z * r2]);
     }
-    this.loft(rings[0], rings[1]);
+    this.metricLoft(rings[0], rings[1]);
   }
-  build(scene: Scene, name: string, parent: TransformNode, mat: Material) {
-    const m = new Mesh(name, scene),
-      d = new VertexData();
-    d.positions = this.p;
-    d.indices = this.idx;
-    d.uvs = this.uv;
-    d.normals = this.n;
-    d.applyToMesh(m);
-    m.parent = parent;
-    m.material = mat;
-    m.isPickable = false;
-    m.receiveShadows = true;
-    return m;
-  }
+}
+
+interface KitPart extends Part {
+  shape: Shell;
+  name: string;
+}
+function panel(slot: Part['slot'], name: string, shape: Shell): KitPart {
+  return { slot, name, shape, wheel: -1, joint: 'body' };
 }
 
 // The inspected Ferrari donor is an open 458 Spider. Close its cockpit at
 // the actual windshield header and rear buttresses, without replacing its
 // silhouette with the Concept or covering the driver's sight line.
-function fixedRoof(scene: Scene, body: TransformNode, f: ReturnType<typeof carFinish>) {
-  const shell = new Shell(),
-    glazing = new Shell(),
-    gasket = new Shell();
-  // z, half-span, crown y, side drop, bow of header across the screen
+function fixedRoof(fit: KitFit) {
+  const shell = new Shell(fit),
+    glazing = new Shell(fit),
+    gasket = new Shell(fit);
+  // z, half-span, crown y, side drop, forward bow, optional shoulder drop.
+  // The donor windshield is flatter across its centre than the roof skin.
+  // Seat the leading lip along the whole header, not just at the A-pillars.
   const ribs = [
-    [0.225, 0.536, 1.218, 0.08, 0.033],
-    [0.125, 0.55, 1.235, 0.073, 0.018],
+    [0.231, 0.536, 1.189, 0.045, 0.033, 0.018],
+    [0.125, 0.55, 1.226, 0.073, 0.018],
     [-0.04, 0.561, 1.251, 0.071, 0.012],
     [-0.27, 0.568, 1.254, 0.075, 0.01],
     [-0.47, 0.558, 1.242, 0.075, 0.008],
     [-0.59, 0.547, 1.216, 0.067, 0.012],
   ];
-  const sections = ribs.map(([z, w, y, drop, bow]) =>
+  const sections = ribs.map(([z, w, y, drop, bow, shoulder = 0]) =>
     Array.from({ length: 17 }, (_, i): Point => {
       const t = (i - 8) / 8;
-      return [w * t, y - drop * t * t, z + bow * (1 - t * t)];
+      return [w * t, y - drop * t * t - shoulder * t ** 4, z + bow * (1 - t * t)];
     }),
   );
   const inside = new Vector3(0, 0.91, -0.17),
@@ -154,39 +166,36 @@ function fixedRoof(scene: Scene, body: TransformNode, f: ReturnType<typeof carFi
     if (i < 2 || i > 13) skin([a, b, c, d]);
     else glazing.face([a, b, c, d], inside);
   }
-  shell.build(scene, 'homologated fixed roof', body, f.paint);
-  glazing.build(scene, 'GT3 polycarbonate side and rear glazing', body, f.glass);
-  gasket.build(scene, 'roof rails and seals', body, f.trim);
+  return [
+    panel('paint', 'homologated fixed roof', shell),
+    panel('glass', 'GT3 polycarbonate side and rear glazing', glazing),
+    panel('trim', 'roof rails and seals', gasket),
+  ];
 }
 
 export function aero(
-  scene: Scene,
-  body: TransformNode,
-  s: Studio,
-  f: ReturnType<typeof carFinish>,
-  rainMat: Material,
+  s: Pick<Studio, 'source' | 'fit' | 'flank' | 'deck' | 'hubs' | 'radii'>,
   prototype: boolean,
 ) {
-  if (s.source === '458') fixedRoof(scene, body, f);
-  const carbon = new Shell(),
-    metal = new Shell(),
-    soot = new Shell(),
-    rain = new Shell(),
-    flame = new Shell(),
-    core = new Shell(),
-    foil = new Shell();
-  const flank = Math.min(1.03, s.flank + 0.04),
+  const fit = s.fit;
+  const carbon = new Shell(fit),
+    metal = new Shell(fit),
+    soot = new Shell(fit),
+    rain = new Shell(fit),
+    flame = new Shell(fit),
+    core = new Shell(fit),
+    foil = new Shell(fit);
+  const flank = Math.min(1.03, s.flank / fit.across + 0.04),
     w = prototype ? 1.047 : 1.018;
-  const deck = s.deck,
+  const deck = (s.deck - fit.sillOffset) / fit.along,
     wingY = deck + (prototype ? 0.365 : 0.33),
     wingZ = -1.93;
-  const rear = s.hubs[2].z + s.radii[2] + 0.16,
-    front = s.hubs[0].z - s.radii[0] - 0.04;
+  const rear = (s.hubs[2].z + s.radii[2]) / fit.along + 0.16,
+    front = (s.hubs[0].z - s.radii[0]) / fit.along - 0.04;
   // The 458 bumper tapers in sooner. Extend only the canards' mounting edges into its skin.
   const canardInset = s.source === '458' ? 0.09 : 0;
-  // Splitter planform recedes at the corners of the rounded nose. Keep these
-  // panels at homologated 75 mm clearance, above the ground shadow.
-  carbon.plate(0.075, 0.035, [
+  // Mount the blade just above the sill, against the nose undertray.
+  carbon.plate(0.081, 0.035, [
     [-0.8, 1.82],
     [-0.91, 1.97],
     [-0.86, 2.13],
@@ -271,7 +280,7 @@ export function aero(
       );
     }
     metal.rod([side * 0.54, 0.112, 2.224], [side * 0.46, 0.283, 2.155], 0.009);
-    carbon.plate(0.079, 0.046, [
+    carbon.plate(0.082, 0.046, [
       [side * (flank - 0.12), rear - 0.12],
       [side * flank, rear - 0.1],
       [side * (flank + 0.02), rear + 0.09],
@@ -330,20 +339,43 @@ export function aero(
         0.011,
         8,
       );
-  carbon.build(scene, 'carbon homologation kit', body, f.carbon);
-  foil.build(scene, 'mainplane wordmark', body, f.foil);
-  metal.build(scene, 'tie rods and side exhausts', body, f.metal);
-  soot.build(scene, 'diffuser and heat shields', body, f.trim);
-  rain.build(scene, 'FIA rain array', body, rainMat);
-  const exhaust = [
-    flame.build(scene, 'overrun flame', body, f.flame),
-    core.build(scene, 'ionized core', body, f.core),
+  const parts: KitPart[] = [
+    ...(s.source === '458' ? fixedRoof(fit) : []),
+    panel('carbon', 'carbon homologation kit', carbon),
+    panel('foil', 'mainplane wordmark', foil),
+    panel('metal', 'tie rods and side exhausts', metal),
+    panel('trim', 'diffuser and heat shields', soot),
+    panel('rain', 'FIA rain array', rain),
+    panel('flame', 'overrun flame', flame),
+    panel('core', 'ionized core', core),
   ];
-  for (const m of exhaust) m.setEnabled(false);
-  return { exhaust, exhaustPort: new Vector3(flank, 0.18, rear + 0.13) };
+  if (s.source === '458')
+    s.hubs.forEach((hub, wheel) =>
+      parts.push({
+        slot: 'caliper',
+        joint: 'steer',
+        wheel,
+        shape: caliper(Math.sign(hub.x), s.radii[wheel]),
+        name: 'monobloc six-piston caliper',
+      }),
+    );
+  // Two continuous rows of lenses once the individual LED spacing falls below a pixel.
+  const rainBars = new Shell(fit);
+  for (const y of [0.245, 0.275])
+    rainBars.plate(y, 0.015, [
+      [-0.078, -2.332],
+      [0.079, -2.332],
+      [0.079, -2.339],
+      [-0.078, -2.339],
+    ]);
+  return {
+    parts,
+    rainBars,
+    exhaustPort: new Vector3((flank + 0.022) * fit.across, fit.height(0.163), (rear + 0.13) * fit.along),
+  };
 }
 
-export function caliper(scene: Scene, parent: TransformNode, side: number, r: number, mat: Material) {
+function caliper(side: number, r: number) {
   const shell = new Shell();
   shell.side(side * r * 0.12, 0.062, [
     [r * 0.34, -r * 0.49],
@@ -354,5 +386,5 @@ export function caliper(scene: Scene, parent: TransformNode, side: number, r: nu
     [-r * 0.03, -r * 0.63],
     [r * 0.23, -r * 0.57],
   ]);
-  return shell.build(scene, 'monobloc six-piston caliper', parent, mat);
+  return shell;
 }

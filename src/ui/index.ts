@@ -2,36 +2,8 @@ import { raceOrder, SPRINT_LAPS } from '../physics/race';
 import { defaults, teams, type Circuit, type RaceState, type Settings, type UiActions } from '../types';
 import { circuitGraphic, icon, insignia } from './graphics';
 import { clock, createHud } from './hud';
+import { options } from './settings';
 import './style.css';
-
-const options = {
-  chassis: [
-    ['458', '458 GT3 Evo'],
-    ['concept', 'Concept GT3 Prototype'],
-  ],
-  weather: [
-    ['golden', 'Golden hour · Dry'],
-    ['damp', 'Overcast · Damp'],
-  ],
-  mode: [
-    ['sprint', '3-lap grid sprint'],
-    ['hotlap', 'Hotlap qualifying'],
-  ],
-  pace: [
-    ['clubman', 'Clubman'],
-    ['pro', 'Pro'],
-    ['platinum', 'FIA Platinum'],
-  ],
-  transmission: [
-    ['auto', 'Automatic'],
-    ['manual', 'Manual'],
-  ],
-  graphics: [
-    ['balanced', 'Balanced'],
-    ['high', 'High'],
-    ['ultra', 'Ultra'],
-  ],
-} as const;
 
 function select(key: keyof typeof options, label: string, wide = false) {
   return `<label class="ax-field${wide ? ' ax-wide' : ''}"><span class="ax-micro">${label}</span><span class="ax-select"><select data-setting="${key}" aria-label="${label}">${options[key].map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>${icon('down')}</span></label>`;
@@ -55,13 +27,14 @@ export function createUI(
   actions: UiActions,
 ): { update(state: RaceState): void } {
   const graphic = circuitGraphic(circuit);
+  const offlineDownload = import.meta.env.PROD && !document.documentElement.hasAttribute('data-archive') ? '<p><a class="ax-offline-link" href="./downloads/apex-gt3.zip" download>Download the full 3D game (.zip) ↓</a></p>' : '';
   // Use an owned child so the host's canvas or loading indicator is never replaced.
   const root = document.createElement('div');
   root.className = 'ax-ui';
   element.append(root);
   root.innerHTML = `<div class="ax-garage" data-section="garage">
     <header class="ax-mast"><div class="ax-wordmark">${insignia}<b>APEX <i>GT3</i></b></div><span class="ax-mast-slash">/</span><div class="ax-series">WEBGPU<span>SIM</span></div>
-      <div class="ax-mast-status"><i class="ax-live-dot"></i> PADDOCK ONLINE</div><div class="ax-utility"><button data-help title="Driving controls">${icon('keys')}<span>Controls</span></button><button data-action="toggleMute" data-sound aria-label="Mute audio"></button></div></header>
+      <div class="ax-mast-status"><i class="ax-live-dot"></i> PADDOCK READY</div><div class="ax-utility"><button data-help title="Driving controls">${icon('keys')}<span>Controls</span></button><button data-action="toggleMute" data-sound aria-label="Mute audio"></button></div></header>
     <div class="ax-identity"><div class="ax-strap"><i></i> COMPETITION GARAGE <span>/</span> BAY 01</div><h1 data-chassis>458 GT3 EVO</h1><div class="ax-teamline"><b data-team-no>88</b><span data-team-name>Scuderia Rosso Corsa</span><em>FACTORY ENTRY</em></div></div>
     <section class="ax-config" aria-label="Garage setup"><div class="ax-config-scroll"><div class="ax-config-title"><div class="ax-strap"><i></i> RACE OPERATIONS</div><div><h2>Session setup</h2>${icon('tune')}</div></div>
       <div class="ax-form-section"><div class="ax-section-head"><span>01</span> VEHICLE ENTRY <i></i></div><div class="ax-fields">${select('chassis', 'Chassis', true)}
@@ -76,7 +49,11 @@ export function createUI(
     <div class="ax-tune-rows"><button data-action="cycleTc">Traction control <b data-tc></b>${icon('angle')}</button><button data-action="cycleAbs">Anti-lock braking <b data-abs></b>${icon('angle')}</button><button data-action="toggleMute">Race audio <b data-audio></b>${icon('angle')}</button></div>
     <button class="ax-primary" data-action="resume">RESUME SESSION ${icon('arrow')}</button><div class="ax-modal-foot"><button data-action="restart">Restart race</button><button data-action="garage">Return to garage</button><button data-help>Controls</button></div></section></div>
   <div class="ax-overlay" data-section="finished" hidden><section class="ax-modal ax-finish"><div class="ax-strap"><i></i> CHEQUERED FLAG / AT YOUR FINISH</div><h2>Race classification</h2><div class="ax-finish-summary"><span>YOUR FINISH <b data-finish-place></b></span><span>BEST LAP <b data-finish-lap></b></span></div><div class="ax-result-scroll"><table><thead><tr><th>POS</th><th>DRIVER</th><th>NO.</th><th>TIME / STATUS</th></tr></thead><tbody></tbody></table></div><button class="ax-primary" data-action="restart">RACE AGAIN ${icon('arrow')}</button><div class="ax-modal-foot"><button data-action="garage">Return to garage</button></div></section></div>
-  <dialog class="ax-modal ax-help"><div class="ax-help-head"><div class="ax-strap"><i></i> DRIVING MANUAL</div><button data-close aria-label="Close controls">${icon('close')}</button></div><h2>Driver controls</h2><dl>${controls.map(([k, v]) => `<div><dt><kbd>${k}</kbd></dt><dd>${v}</dd></div>`).join('')}</dl><p>Keyboard or connected gamepad.</p><button data-close class="ax-primary">BACK ${icon('arrow')}</button></dialog>`;
+  <dialog class="ax-modal ax-help"><div class="ax-help-head"><div class="ax-strap"><i></i> DRIVING MANUAL</div><button data-close aria-label="Close controls">${icon('close')}</button></div><h2>Driver controls</h2>
+    <p><b>Touchscreen:</b> Wait for lights out, then slide left or right on Steer. With your other thumb, press higher on Gas or Brake for more pedal; slide down to ease off. Lift to release. In manual, tap − or + to shift.</p>
+    <p>Tap Cam to change view. Hold Rear to look back or H-Brake for the handbrake. Reset returns you to the track; Pause opens the pit wall.</p>
+    <p><b>Gamepad:</b> Steer with the left stick. The right trigger accelerates; the left trigger brakes.</p>
+    <p><b>Keyboard</b></p><dl>${controls.map(([k, v]) => `<div><dt><kbd>${k}</kbd></dt><dd>${v}</dd></div>`).join('')}</dl>${offlineDownload}<button data-close class="ax-primary">BACK ${icon('arrow')}</button></dialog>`;
 
   const sections = Object.fromEntries(
     Array.from(root.querySelectorAll<HTMLElement>('[data-section]'), (e) => [e.dataset.section!, e]),

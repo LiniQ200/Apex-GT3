@@ -3,7 +3,7 @@ import { FreeCamera } from '@babylonjs/core/Cameras/freeCamera';
 import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Circuit, RaceState } from '../types';
 import { buildShowroom } from './showroom';
-import { createWheelDisplay } from './cockpit';
+import { createCockpit } from './cockpit';
 
 const clamp = (x: number, min: number, max: number) => Math.max(min, Math.min(max, x));
 const wrapAngle = (x: number) => Math.atan2(Math.sin(x), Math.cos(x));
@@ -38,7 +38,7 @@ export function createCameras(
   camera.maxZ = 5500;
   scene.activeCamera = camera;
   const showroom = buildShowroom(scene),
-    wheelDisplay = createWheelDisplay(scene),
+    cockpit = createCockpit(scene),
     canvas = scene.getEngine().getRenderingCanvas();
   const target = new Vector3(),
     local = new Vector3(),
@@ -100,7 +100,11 @@ export function createCameras(
         inGarage = s.phase === 'garage';
       if (showroom.isEnabled() !== inGarage) showroom.setEnabled(inGarage);
       const car = s.drivers.find((d) => d.id === 0);
-      const anchor = wheelDisplay.update(car, !inGarage && !lookBack && s.camera === 'cockpit');
+      const eye = cockpit(
+        car,
+        !inGarage && !lookBack && s.camera === 'cockpit',
+        s.phase === 'race' || s.phase === 'lights',
+      );
       if (inGarage) {
         garage(dt);
         lastShot = 'garage';
@@ -152,23 +156,23 @@ export function createCameras(
         const helmet = shot === 'cockpit',
           central = s.settings.chassis === 'concept';
         Matrix.RotationYawPitchRollToRef(car.yaw, car.pitch, car.roll, rotation);
-        // Eye points are relative to the GLB floor origin, not its bounding centre.
-        // The prototype has a central steering column, the 458 a left-hand seat.
-        local.set(
-          helmet ? (anchor?.x ?? (central ? 0 : -0.315)) + side * 0.11 : 0,
-          helmet ? (anchor ? anchor.y + 0.25 : 1.03) + dip * 0.1 : 1.06,
-          helmet ? (anchor ? anchor.z - 0.64 : central ? -0.46 : -0.26) : 1.21,
-        );
-        Vector3.TransformCoordinatesToRef(local, rotation, camera.position);
-        camera.position.x += car.x;
-        camera.position.y += car.y;
-        camera.position.z += car.z;
-        local.set(helmet ? side * 0.65 : 0, helmet ? -1.32 : -1.92, 24);
+        if (eye) camera.position.copyFrom(eye);
+        else {
+          // Provisional helmet pose while a new rig is loading behind the curtain.
+          local.set(
+            helmet && !central ? -0.315 : 0,
+            helmet ? (central ? 1.11 : 0.96) : 1.06,
+            helmet ? (central ? 0.24 : -0.16) : 1.21,
+          );
+          Vector3.TransformCoordinatesToRef(local, rotation, camera.position);
+          camera.position.addInPlaceFromFloats(car.x, car.y, car.z);
+        }
+        local.set(0, helmet ? -1.05 : -1.92, 24);
         Vector3.TransformNormalToRef(local, rotation, target);
         target.addInPlace(camera.position);
-        camera.fov = lens.at(helmet ? 1.1 : 0.935 + 0.055 * speed, 8, dt, cut);
+        camera.fov = lens.at(helmet ? 1.06 : 0.935 + 0.055 * speed, 8, dt, cut);
         camera.setTarget(target);
-        camera.rotation.z = car.roll * (helmet ? 0.82 : 1);
+        camera.rotation.z = car.roll;
         return;
       }
       // A chain of fixed tripod positions cuts between high stand, low apex and

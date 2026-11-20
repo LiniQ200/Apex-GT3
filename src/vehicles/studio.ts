@@ -1,15 +1,23 @@
 import { LoadAssetContainerAsync } from '@babylonjs/core/Loading/sceneLoader';
 import { Matrix, Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Geometry } from '@babylonjs/core/Meshes/geometry';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
 import type { Scene } from '@babylonjs/core/scene';
 import type { Node } from '@babylonjs/core/node';
+import { hardwareSlots } from '../materials/carFinish';
 import type { Settings } from '../types';
+import { aero } from './aero';
+import { KitFit } from './kitFit';
+import { shadowHull } from './shadowHull';
 import '@babylonjs/loaders/glTF/glTFFileLoader';
 import '@babylonjs/loaders/glTF/2.0/glTFLoader';
 import '@babylonjs/loaders/glTF/2.0/Extensions/KHR_draco_mesh_compression';
 
 export const corners = ['FL', 'FR', 'RL', 'RR'] as const;
+// Projected pixels/metre. The last two transitions widen just the emissive
+// sample, not the chassis or any other material.
+export const detailBands = [145, 30, 10, 5, 2.6] as const;
 export type Slot =
   | 'paint'
   | 'trim'
@@ -22,10 +30,16 @@ export type Slot =
   | 'rotor'
   | 'caliper'
   | 'badge'
-  | 'panel';
+  | 'panel'
+  | 'hardware'
+  | 'carbon'
+  | 'foil'
+  | 'rain'
+  | 'flame'
+  | 'core';
 type Chassis = Settings['chassis'];
 type Joint = 'body' | 'column' | 'spin' | 'steer';
-interface Part {
+export interface Part {
   joint: Joint;
   slot: Slot;
   wheel: number;
@@ -37,18 +51,22 @@ interface Source extends Part {
   ids: ArrayLike<number>;
 }
 interface TemplatePart extends Part {
-  mesh: Mesh;
-  far: Mesh;
+  label?: string;
+  levels: (Geometry | undefined)[];
 }
 export interface Studio {
   source: Chassis;
+  fit: KitFit;
   hubs: Vector3[];
   radii: number[];
+  tireWidths: number[];
   column: Vector3;
   columnAxis: Vector3;
   deck: number;
   flank: number;
   parts: TemplatePart[];
+  shadow: Geometry;
+  exhaustPort: Vector3;
 }
 
 // These are node / parent names from the GLB JSON rig report. In particular,
@@ -167,9 +185,18 @@ function batch(part: Part): Batch {
 
 // A spatial cluster decimator runs ONCE per source, not per driver or per frame.
 // Keep hard edges / UV charts separate, remove collapsed triangles, and combine
-// only primitives sharing their material and independent joint. Both resulting
-// LOD geometries are shared across every car using this studio chassis.
-function appendLOD(b: Batch, s: Source, cell: number, distant = false) {
+// only primitives sharing a draw and joint at this detail. Reproject UVs in
+// the original local frame *before* baking a wheel/column into a coarser batch.
+function appendLOD(
+  b: Batch,
+  s: Source,
+  fit: KitFit,
+  cell: number,
+  distant: boolean,
+  offset: Vector3 | undefined,
+  swatch: number,
+  skinCell = 0,
+) {
   const map = new Map<number, number>(),
     counts: number[] = [];
   const keepCreases = !distant || s.slot === 'paint' || s.slot === 'glass' || s.slot === 'tire';
@@ -196,24 +223,28 @@ function appendLOD(b: Batch, s: Source, cell: number, distant = false) {
     const ax = Math.abs(nx),
       ay = Math.abs(ny),
       az = Math.abs(nz);
-    const face = !keepCreases
-      ? 0
-      : ax > ay && ax > az
-        ? nx > 0
-          ? 0
-          : 1
-        : ay > az
-          ? ny > 0
-            ? 2
-            : 3
-          : nz > 0
-            ? 4
-            : 5;
-    const key =
-      (((Math.round(x / cell) + 320) * 641 + Math.round(y / cell) + 320) * 641 + Math.round(z / cell) + 320) *
-        18 +
-      chart * 6 +
-      face;
+    // Some nominally interior donor meshes extend all the way to the outer
+    // lamp surround. Only simplify the enclosed portion on a close car.
+    const exposed =
+      skinCell > 0 && (Math.abs(x) > 0.62 * fit.across || z < -0.95 * fit.along || z > 0.85 * fit.along);
+    const size = exposed ? skinCell : cell;
+    const face =
+      !keepCreases && !exposed
+        ? 0
+        : ax > ay && ax > az
+          ? nx > 0
+            ? 0
+            : 1
+          : ay > az
+            ? ny > 0
+              ? 2
+              : 3
+            : nz > 0
+              ? 4
+              : 5;
+    const voxel =
+      ((Math.round(x / size) + 320) * 641 + Math.round(y / size) + 320) * 641 + Math.round(z / size) + 320;
+    const key = (voxel * 18 + chart * 6 + face) * 2 + Number(exposed);
     let j = map.get(key);
     if (j === undefined) {
       j = b.positions.length / 3;
@@ -253,7 +284,11 @@ function appendLOD(b: Batch, s: Source, cell: number, distant = false) {
     if (s.slot === 'paint') {
       const x = (P[a * 3] + P[c * 3] + P[d * 3]) / 3,
         y = (P[a * 3 + 1] + P[c * 3 + 1] + P[d * 3 + 1]) / 3;
-      if (Math.abs(x) > 0.57 && y < 0.88 && Math.abs(N[a * 3] + N[c * 3] + N[d * 3]) > 0.95)
+      if (
+        Math.abs(x) > 0.57 * fit.across &&
+        y < fit.height(0.88) &&
+        Math.abs(N[a * 3] + N[c * 3] + N[d * 3]) > 0.95
+      )
         chart = x > 0 ? 1 : 2;
     }
     const ai = add(a, chart),
@@ -262,7 +297,7 @@ function appendLOD(b: Batch, s: Source, cell: number, distant = false) {
     if (ai !== ci && ci !== di && di !== ai) b.indices.push(ai, ci, di);
   }
   // The six extreme support planes (including each tire contact patch) and
-  // therefore the measured hub centers survive reduction in both LODs.
+  // therefore the measured hub centers survive reduction.
   for (let k = 0; k < 6; k++) if (Number.isFinite(extrema[k])) b.positions[pins[k]] = extrema[k];
   for (let j = base; j < b.positions.length / 3; j++) {
     const i = j * 3,
@@ -270,32 +305,43 @@ function appendLOD(b: Batch, s: Source, cell: number, distant = false) {
       y = b.positions[i + 1],
       z = b.positions[i + 2],
       chart = charts[j - base];
-    if (s.slot === 'paint') {
+    if (swatch >= 0) b.uvs.push((swatch + 0.5) / hardwareSlots.length, 0.5);
+    else if (s.slot === 'paint') {
       // Project AFTER reduction so the stripe and each right-reading door
       // chart stay straight even when distant vertices have been averaged.
-      if (chart === 0) b.uvs.push(0.015 + 0.47 * (0.5 + x / 2.1), 0.02 + 0.96 * (0.5 - z / 4.63));
-      else b.uvs.push(0.51 + 0.48 * (0.5 + (chart === 1 ? z : -z) / 4.63), 0.04 + 0.92 * (1 - y / 1.45));
+      if (chart === 0)
+        b.uvs.push(0.015 + 0.47 * (0.5 + x / (2.1 * fit.across)), 0.02 + 0.96 * (0.5 - z / fit.length));
+      else
+        b.uvs.push(
+          0.51 + 0.48 * (0.5 + (chart === 1 ? z : -z) / fit.length),
+          0.04 + 0.92 * (1 - (y - fit.sillOffset) / (1.45 * fit.along)),
+        );
     } else if (s.slot === 'rotor') b.uvs.push(0.5 + z / 0.48, 0.5 + y / 0.48);
     else b.uvs.push((z + 0.35 * y) * 2, (y + x * 0.34) * 2);
+    if (offset) {
+      b.positions[i] += offset.x;
+      b.positions[i + 1] += offset.y;
+      b.positions[i + 2] += offset.z;
+    }
   }
 }
 
 // Clip a physical light box to the actual door skin at each LOD. Local UVs
 // are independent of the paint atlas, so #28 need not duplicate a 2k #88 skin.
-function doorPanels(src: Batch) {
+function doorPanels(src: Batch, fit: KitFit) {
   const out = batch({ slot: 'panel', joint: 'body', wheel: -1 }),
     p = src.positions,
     n = src.normals;
-  const zl = -0.305,
-    zh = 0.37,
-    yl = 0.285,
-    yh = 0.745;
+  const zl = -0.305 * fit.along,
+    zh = 0.37 * fit.along,
+    yl = fit.height(0.285),
+    yh = fit.height(0.745);
   for (let i = 0; i < src.indices.length; i += 3) {
     const a = src.indices[i] * 3,
       b = src.indices[i + 1] * 3,
       c = src.indices[i + 2] * 3;
     const x = (p[a] + p[b] + p[c]) / 3;
-    if (Math.abs(x) < 0.7) continue;
+    if (Math.abs(x) < 0.7 * fit.across) continue;
     if (
       Math.min(p[a + 2], p[b + 2], p[c + 2]) > zh ||
       Math.max(p[a + 2], p[b + 2], p[c + 2]) < zl ||
@@ -340,9 +386,8 @@ function doorPanels(src: Batch) {
   return out;
 }
 
-function templateMesh(scene: Scene, name: string, b: Batch) {
-  const mesh = new Mesh(name, scene),
-    data = new VertexData();
+function geometry(scene: Scene, name: string, b: Batch) {
+  const data = new VertexData();
   for (let i = 0; i < b.normals.length; i += 3) {
     const l = Math.hypot(b.normals[i], b.normals[i + 1], b.normals[i + 2]) || 1;
     for (let k = i; k < i + 3; k++) b.normals[k] /= l;
@@ -351,10 +396,170 @@ function templateMesh(scene: Scene, name: string, b: Batch) {
   data.normals = new Float32Array(b.normals);
   data.uvs = new Float32Array(b.uvs);
   data.indices = b.positions.length / 3 > 65535 ? new Uint32Array(b.indices) : new Uint16Array(b.indices);
-  data.applyToMesh(mesh);
-  mesh.setEnabled(false);
-  mesh.isPickable = false;
-  return mesh;
+  // No disabled template meshes in the scene's per-frame traversal. The scene
+  // owns these buffers even between races, when the last rig has detached.
+  const g = new Geometry(name, scene, data);
+  scene.pushGeometry(g);
+  return g;
+}
+
+// At long range a real LED can fall entirely between samples even when its
+// car still occupies several pixels. Integrate a small rear-facing footprint
+// at each donor's measured outer lens, in the *existing* brake-material draw.
+// It obeys depth, backface culling, exposure and this driver's brake input.
+function sampledLenses(src: Batch, source: Chassis, fit: KitFit, size: number) {
+  const b = {
+    ...src,
+    positions: src.positions.slice(),
+    normals: src.normals.slice(),
+    indices: src.indices.slice(),
+    uvs: src.uvs.slice(),
+  };
+  const [x, y, z] = source === '458' ? [0.692, 0.85, -2.099] : [0.412, 1.004, -1.971];
+  const r = size * 0.5;
+  for (const side of [-1, 1]) {
+    const base = b.positions.length / 3;
+    for (const [dx, dy] of [
+      [-r, -r],
+      [r, -r],
+      [r, r],
+      [-r, r],
+    ]) {
+      b.positions.push(side * x * fit.across + dx, fit.height(y) + dy, z * fit.along);
+      b.normals.push(0, 0, -1);
+      b.uvs.push(0.5, 0.5);
+    }
+    b.indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  return b;
+}
+
+function buildLevels(
+  scene: Scene,
+  name: string,
+  source: Chassis,
+  fit: KitFit,
+  sources: Source[],
+  kit: ReturnType<typeof aero>,
+  hubs: Vector3[],
+  column: Vector3,
+) {
+  const built = new Map<string, TemplatePart>();
+  // These adjoining skins must meet at precisely the same seams even at a
+  // reduced render resolution. Reuse the inspection buffers on the moving
+  // close car; reduce the mechanical/interior work rather than its bodywork.
+  const outerSkin = (p: Part) =>
+    p.joint === 'body' && ['paint', 'glass', 'panel', 'headlight', 'taillight'].includes(p.slot);
+  for (let level = 0; level < 4; level++) {
+    const groups = new Map<string, Batch>();
+    if (level === 1) for (const part of built.values()) if (outerSkin(part)) part.levels[1] = part.levels[0];
+    function destination(p: Part, label?: string) {
+      const swatch =
+        level === 0 || (p.slot === 'foil' && level < 3)
+          ? -1
+          : (hardwareSlots as readonly Slot[]).indexOf(p.slot);
+      const slot = swatch < 0 ? p.slot : 'hardware';
+      const bake = (level > 0 && p.joint === 'column') || (level >= 2 && p.wheel >= 0);
+      const joint = bake ? 'body' : p.joint,
+        wheel = bake ? -1 : p.wheel;
+      const key = `${joint}.${wheel}.${slot}${label ? '.' + label : ''}`;
+      let b = groups.get(key);
+      if (!b) {
+        b = batch({ joint, wheel, slot });
+        groups.set(key, b);
+        if (!built.has(key)) built.set(key, { joint, wheel, slot, label, levels: [] });
+      }
+      return { b, swatch, offset: bake ? (p.wheel >= 0 ? hubs[p.wheel] : column) : undefined };
+    }
+    for (const p of sources) {
+      if (level === 1 && (outerSkin(p) || (p.joint === 'column' && p.slot === 'taillight'))) continue;
+      if (
+        level >= 2 &&
+        (p.joint === 'column' || /Interior(Pedal|Floormat|Door|Steering)|BodyHoodInterior/.test(p.name))
+      )
+        continue;
+      const { b, swatch, offset } = destination(p);
+      const scale = p.joint === 'column' ? 0.012 : p.wheel >= 0 ? 0.024 : p.slot === 'paint' ? 0.036 : 0.037;
+      const panelEdge =
+        level === 1 && p.joint === 'body' && !/interior|leather|carpet|wiper|engine|axles/i.test(p.name);
+      const spoke = level === 1 && p.slot === 'rim';
+      const cell = scale * (panelEdge ? 0.38 : spoke ? 0.63 : [0.38, 1.55, 3.7, 8.5][level]);
+      // A tail lens is much thinner than the panel it sits on. Keep luminous
+      // coverage rather than letting the distant bodywork's grid collapse it.
+      const lens = p.slot === 'taillight' || p.slot === 'headlight';
+      const skinCell = level === 1 && !panelEdge && p.joint === 'body' ? scale * 0.38 : 0;
+      appendLOD(
+        b,
+        p,
+        fit,
+        lens ? Math.min(cell, 0.04) : cell,
+        level > 0 && !panelEdge && !spoke,
+        offset,
+        swatch,
+        skinCell,
+      );
+    }
+    const paint = groups.get('body.-1.paint');
+    if (paint) {
+      groups.set('body.-1.panel', doorPanels(paint, fit));
+      if (!built.has('body.-1.panel'))
+        built.set('body.-1.panel', { joint: 'body', wheel: -1, slot: 'panel', levels: [] });
+    }
+    for (const p of kit.parts) {
+      if (level === 1 && outerSkin(p)) continue;
+      // Keep inspection geometry (including its original transparent sort
+      // units) untouched. In race LODs kit pieces join matching finish/joint draws.
+      const label =
+        !level || (['rain', 'foil', 'flame', 'core'].includes(p.slot) && !(level === 3 && p.slot === 'foil'))
+          ? p.name
+          : undefined;
+      const { b, offset, swatch } = destination(p, label);
+      const shape = level >= 2 && p.slot === 'rain' ? kit.rainBars : p.shape;
+      const base = b.positions.length / 3;
+      for (let i = 0; i < shape.p.length; i += 3) {
+        b.positions.push(
+          shape.p[i] + (offset?.x ?? 0),
+          shape.p[i + 1] + (offset?.y ?? 0),
+          shape.p[i + 2] + (offset?.z ?? 0),
+        );
+        b.normals.push(shape.n[i], shape.n[i + 1], shape.n[i + 2]);
+        const uv = (i / 3) * 2;
+        b.uvs.push(
+          swatch >= 0 ? (swatch + 0.5) / hardwareSlots.length : shape.uv[uv],
+          swatch >= 0 ? 0.5 : shape.uv[uv + 1],
+        );
+      }
+      for (const index of shape.idx) b.indices.push(base + index);
+      if (swatch >= 0 && (p.slot === 'carbon' || p.slot === 'foil'))
+        for (let i = 0; i < shape.idx.length; i += 3)
+          b.indices.push(base + shape.idx[i], base + shape.idx[i + 2], base + shape.idx[i + 1]);
+    }
+    for (const [key, b] of groups)
+      if (b.indices.length) {
+        const part = built.get(key)!;
+        if (b.slot === 'taillight' && level >= 2) {
+          const sizes = level === 2 ? [0.102] : [0.2, 0.39, 0.72];
+          sizes.forEach((size, i) => {
+            part.levels[level + i] = geometry(
+              scene,
+              `${name}.${level + i}.${key}`,
+              sampledLenses(b, source, fit, size),
+            );
+          });
+          continue;
+        }
+        // The exhaust, stencil and rain array can be identical between tiers.
+        const same =
+          part.label &&
+          level > 0 &&
+          (b.slot === 'foil' ||
+            b.slot === 'flame' ||
+            b.slot === 'core' ||
+            (b.slot === 'rain' && level !== 2));
+        part.levels[level] = same ? part.levels[level - 1] : geometry(scene, `${name}.${level}.${key}`, b);
+      }
+  }
+  return [...built.values()];
 }
 
 const cache = new WeakMap<Scene, Map<Chassis, Promise<Studio>>>();
@@ -420,86 +625,76 @@ async function load(scene: Scene, chassis: Chassis): Promise<Studio> {
     const whole = bounds(parts, () => true),
       body = bounds(parts, (p) => p.joint === 'body'),
       center = whole.center();
-    const sx = 2.04 / (whole.max.x - whole.min.x),
-      sz = 4.63 / (whole.max.z - whole.min.z),
-      sy = sz;
     const rawHubs = corners.map((_, k) => bounds(parts, (p) => p.wheel === k && p.joint === 'spin').center());
     const wheels = corners.map((_, k) => bounds(parts, (p) => p.wheel === k && p.slot === 'tire'));
-    const radii = wheels.map((b) => (b.max.y - b.min.y) * sy * 0.5);
-    const hubs = rawHubs.map(
-      (v, k) => new Vector3((v.x - center.x) * sx, (v.y - wheels[k].min.y) * sy, (v.z - center.z) * sz),
-    );
-    const bodyY = 0.075 - body.min.y * sy;
+    // Both decoded GLBs are already metric. One glTF metre = one road metre
+    // on every axis. Translate the whole rest pose from ONE tire tangent
+    // plane: moving the body or four tires separately changes arch/seat gaps.
+    const road = Math.min(...wheels.map((w) => w.min.y));
+    const origin = new Vector3(center.x, road, center.z);
+    const hubs = rawHubs.map((h) => h.subtract(origin));
+    const radii = wheels.map((w) => (w.max.y - w.min.y) * 0.5);
+    const tireWidths = wheels.map((w) => w.max.x - w.min.x);
+    const fit = new KitFit(whole.max.x - whole.min.x, whole.max.z - whole.min.z, body.min.y - road);
     const pivot = [...container.transformNodes, ...meshes].find(
       (n) => n.name === (concept ? 'InteriorSteeringCylinder' : 'steering_wheel'),
     )!;
     const columnMatrix = pivot
       .computeWorldMatrix(true)
       .multiply(concept ? Matrix.Identity() : Matrix.RotationY(Math.PI));
-    const col = Vector3.TransformCoordinates(Vector3.Zero(), columnMatrix),
-      columnAxis = Vector3.TransformNormal(Vector3.Up(), columnMatrix);
-    columnAxis.multiplyInPlace(new Vector3(sx, sy, sz)).normalize();
+    const column = Vector3.TransformCoordinates(Vector3.Zero(), columnMatrix).subtractInPlace(origin),
+      columnAxis = Vector3.TransformNormal(Vector3.Up(), columnMatrix).normalize();
     if (columnAxis.z < 0) columnAxis.scaleInPlace(-1);
-    const column = new Vector3((col.x - center.x) * sx, col.y * sy + bodyY, (col.z - center.z) * sz);
-    let deck = 0.43,
-      flank = 0.68;
+    let deck = fit.height(0.43),
+      flank = 0.68 * fit.across;
     for (const p of parts)
       for (let i = 0; i < p.pos.length; i += 3) {
-        const x = (p.pos[i] - center.x) * sx,
-          z = (p.pos[i + 2] - center.z) * sz;
-        const y = p.pos[i + 1] * sy + (p.wheel < 0 ? bodyY : -wheels[p.wheel].min.y * sy);
-        if (p.slot === 'paint' && Math.abs(x) < 0.67 && Math.abs(z + 1.8) < 0.13) deck = Math.max(deck, y);
-        if (p.slot === 'paint' && Math.abs(z) < 0.8 && y > 0.1 && y < 0.4)
+        const x = p.pos[i] - origin.x,
+          y = p.pos[i + 1] - origin.y,
+          z = p.pos[i + 2] - origin.z;
+        if (
+          p.slot === 'paint' &&
+          Math.abs(x) < 0.67 * fit.across &&
+          Math.abs(z + 1.8 * fit.along) < 0.13 * fit.along
+        )
+          deck = Math.max(deck, y);
+        if (p.slot === 'paint' && Math.abs(z) < 0.8 * fit.along && y > fit.height(0.1) && y < fit.height(0.4))
           flank = Math.max(flank, Math.abs(x));
         const o = p.wheel >= 0 ? hubs[p.wheel] : p.joint === 'column' ? column : null;
         p.pos[i] = x - (o?.x ?? 0);
         p.pos[i + 1] = y - (o?.y ?? 0);
         p.pos[i + 2] = z - (o?.z ?? 0);
-        const n = p.normal,
-          nx = n[i] / sx,
-          ny = n[i + 1] / sy,
-          nz = n[i + 2] / sz,
-          f = 1 / (Math.hypot(nx, ny, nz) || 1);
-        n[i] = nx * f;
-        n[i + 1] = ny * f;
-        n[i + 2] = nz * f;
       }
     if (!(hubs[0].x < 0 && hubs[1].x > 0 && hubs[0].z > hubs[2].z))
       throw Error(`Wheel orientation mismatch in ${name}`);
-    const groups = new Map<string, { near: Batch; far: Batch }>();
-    for (const p of parts) {
-      const key = `${p.joint}.${p.wheel}.${p.slot}`;
-      let g = groups.get(key);
-      if (!g) {
-        g = { near: batch(p), far: batch(p) };
-        groups.set(key, g);
-      }
-      const cell = p.joint === 'column' ? 0.012 : p.wheel >= 0 ? 0.024 : p.slot === 'paint' ? 0.036 : 0.037;
-      appendLOD(g.near, p, cell * 0.38);
-      appendLOD(g.far, p, cell * 2, true);
-    }
-    const paint = groups.get('body.-1.paint')!;
-    groups.set('body.-1.panel', { near: doorPanels(paint.near), far: doorPanels(paint.far) });
-    const built: TemplatePart[] = [];
-    for (const [key, { near, far }] of groups)
-      if (near.indices.length) {
-        built.push({
-          joint: near.joint,
-          wheel: near.wheel,
-          slot: near.slot,
-          mesh: templateMesh(scene, name + '.' + key, near),
-          far: templateMesh(scene, name + '.LOD.' + key, far),
-        });
-      }
+    const source = concept ? 'concept' : '458',
+      kit = aero({ source, fit, hubs, radii, deck, flank }, chassis === 'concept');
+    const skin: ArrayLike<number>[] = parts
+      .filter((p) => p.joint === 'body' && (p.slot === 'paint' || p.slot === 'glass' || p.slot === 'trim'))
+      .map((p) => p.pos);
+    skin.push(...kit.parts.filter((p) => p.slot === 'glass' || p.slot === 'paint').map((p) => p.shape.p));
     return {
-      source: concept ? 'concept' : '458',
+      source,
+      fit,
       hubs,
       radii,
+      tireWidths,
       deck,
       flank,
       column,
       columnAxis,
-      parts: built,
+      parts: buildLevels(scene, name, source, fit, parts, kit, hubs, column),
+      exhaustPort: kit.exhaustPort,
+      shadow: shadowHull(
+        scene,
+        name,
+        skin,
+        fit.length,
+        hubs,
+        radii,
+        tireWidths,
+        kit.parts.filter((p) => p.slot === 'carbon' || p.slot === 'foil').map((p) => p.shape),
+      ),
     };
   } finally {
     container.dispose();

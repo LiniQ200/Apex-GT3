@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile, copyFile, stat, rename } from 'node:fs/prom
 import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import jpeg from 'jpeg-js';
+import { prepareTrackMaps } from './track-maps.mjs';
 
 const root = 'public/assets/',
   ua = { 'User-Agent': 'AmpGT3Sim/1.0' },
@@ -9,9 +10,13 @@ const root = 'public/assets/',
   assets = {};
 const previous = JSON.parse(await readFile(root + 'manifest.json', 'utf8').catch(() => '{}')).assets ?? {};
 const sha = (b) => createHash('sha256').update(b).digest('hex');
+const offline = process.argv.includes('--offline');
+// Starting the game should not retry a verified offline substitution. An explicit
+// fetch:assets without flags still promotes it to the upstream model or texture.
+const keepFallbacks = offline || process.argv.includes('--ensure');
 async function cached(path, skipSource) {
   const old = previous[path];
-  if (!old || old.source === skipSource) return false;
+  if (!old || (!keepFallbacks && old.source === skipSource)) return false;
   const b = await readFile(root + path).catch(() => null);
   if (!b || sha(b) !== old.sha256) return false;
   assets[path] = old;
@@ -24,6 +29,7 @@ async function save(path, data, source) {
   assets[path] = { bytes: data.length, sha256: sha(data), source };
 }
 async function request(url) {
+  if (offline) throw Error('Offline asset preparation');
   let err;
   for (let i = 0; i < 3; i++) {
     try {
@@ -208,6 +214,7 @@ await Promise.all([
   haven('kerb', ['painted_plaster_wall', 'concrete_floor_painted']),
   haven('terrain', ['aerial_grass_rock', 'coast_sand_rocks_02']),
 ]);
+await prepareTrackMaps({ root, assets, previous, cached, save });
 const notices = [];
 for (const [name, file] of [
   ['Babylon.js and included components', 'node_modules/@babylonjs/core/NOTICE.md'],
