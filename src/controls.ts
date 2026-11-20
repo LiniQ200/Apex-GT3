@@ -30,6 +30,9 @@ export function controls(
       'KeyT',
       'KeyY',
       'KeyM',
+      'KeyL',
+      'KeyP',
+      'KeyV',
     ];
   let lastRumble = 0,
     previousYaw = 0,

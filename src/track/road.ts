@@ -1,5 +1,17 @@
 import type { Circuit, CollisionMesh, TrackPoint } from '../types';
-import { hasKerb, kerbRamp, kerbWidth, trapSide, wallOffset } from './circuit';
+import {
+  hasKerb,
+  isInPitBranch,
+  kerbRamp,
+  kerbWidth,
+  PIT_BOX_D,
+  PIT_WALL_D,
+  PIT_WALL_END_S,
+  PIT_WALL_START_BACK,
+  pitBoxStation,
+  trapSide,
+  wallOffset,
+} from './circuit';
 
 export type Vec = [number, number, number];
 export interface Geometry {
@@ -33,6 +45,7 @@ export function makeRoad(circuit: Circuit) {
   const repeatV = (s: number, metres: number) => (s / circuit.length) * Math.round(circuit.length / metres);
   const meshes = {
     road: geometry(),
+    pitApron: geometry(),
     grass: geometry(),
     gravel: geometry(),
     kerb: geometry(),
@@ -42,13 +55,19 @@ export function makeRoad(circuit: Circuit) {
     absorber: geometry(),
   };
   const wallCollision = geometry(),
-    runoffCollision = geometry();
+    pitWallCollision = geometry(),
+    runoffCollision = geometry(),
+    pitCollision = geometry();
   // Integer stations keep all joints and material transitions on identical coordinates;
   // the final residual interval terminates at the exact first row of the next lap.
   const stations: number[] = [];
   for (let s = 0; s < circuit.length; s += 2) stations.push(s);
   stations.push(circuit.length);
-  for (const s of [855, 1560, 1595, 1810, 2360, 2560, 2650, 3150, 3265, 3970, 4245])
+  for (const s of [
+    855, 1560, 1595, 1810, 2360, 2560, 2650, 3150, 3265, 3970, 4245,
+    PIT_WALL_END_S,
+    Math.round(circuit.length - PIT_WALL_START_BACK),
+  ])
     if (!stations.includes(s)) stations.push(s);
   stations.sort((a, b) => a - b);
   let prev: number[] | null = null;
@@ -129,24 +148,49 @@ export function makeRoad(circuit: Circuit) {
         );
       }
       const grassTint = 0.87 + 0.045 * Math.sin(m * 0.21) + 0.04 * Math.cos(m * 0.024);
+      const pitBranch = side === 1 && isInPitBranch(m, circuit.length);
+      const pitWallActive = side === 1 && (m < PIT_WALL_END_S || m > circuit.length - PIT_WALL_START_BACK);
       const shoulder: Profile = (t) => [
         [edge(t, kerbEdge), 0],
         [trap ? edge(t, 2.65) : wall(t), 0],
       ];
-      ribbon(meshes.grass, p, q, end, shoulder, side < 0, [grassTint, grassTint, grassTint], 4.8);
-      ribbon(
-        runoffCollision,
-        p,
-        q,
-        end,
-        (t) => [
-          [edge(t, kerbEdge), 0],
-          [wall(t), 0],
-        ],
-        side < 0,
-        [1, 1, 1],
-        1,
-      );
+      if (pitBranch) {
+        if (pitWallActive) {
+          // Trackside grass verge between main-straight white line and concrete pit wall
+          const verge: Profile = (t) => [
+            [edge(t, kerbEdge), 0],
+            [PIT_WALL_D, 0],
+          ];
+          ribbon(meshes.grass, p, q, end, verge, false, [grassTint, grassTint, grassTint], 4.8);
+          ribbon(runoffCollision, p, q, end, verge, false, [1, 1, 1], 1);
+          // Paved concrete pit lane behind the pit wall
+          const pitLane: Profile = (t) => [
+            [PIT_WALL_D + 0.68, 0],
+            [wall(t), 0],
+          ];
+          ribbon(meshes.pitApron, p, q, end, pitLane, false, [0.92, 0.91, 0.88], 3.8);
+          ribbon(pitCollision, p, q, end, pitLane, false, [1, 1, 1], 1);
+        } else {
+          // Open paved pit-entry and pit-exit merge apron
+          ribbon(meshes.pitApron, p, q, end, shoulder, false, [0.92, 0.91, 0.88], 3.8);
+          ribbon(pitCollision, p, q, end, shoulder, false, [1, 1, 1], 1);
+        }
+      } else {
+        ribbon(meshes.grass, p, q, end, shoulder, side < 0, [grassTint, grassTint, grassTint], 4.8);
+        ribbon(
+          runoffCollision,
+          p,
+          q,
+          end,
+          (t) => [
+            [edge(t, kerbEdge), 0],
+            [wall(t), 0],
+          ],
+          side < 0,
+          [1, 1, 1],
+          1,
+        );
+      }
       if (trap)
         ribbon(
           meshes.gravel,
@@ -177,41 +221,119 @@ export function makeRoad(circuit: Circuit) {
         [0.8, 0.78, 0.71],
         5.8,
       );
-      ribbon(
-        meshes.paint,
-        p,
-        q,
-        end,
-        (t) => [
-          [edge(t, -0.28), 0.014],
-          [edge(t, -0.115), 0.014],
-        ],
-        side < 0,
-        white,
-        1,
-      );
-      // Single-sided continuous impact face. Right wall normals face left and vice versa.
+      if (!pitBranch) {
+        ribbon(
+          meshes.paint,
+          p,
+          q,
+          end,
+          (t) => [
+            [edge(t, -0.28), 0.014],
+            [edge(t, -0.115), 0.014],
+          ],
+          side < 0,
+          white,
+          1,
+        );
+      } else {
+        // Dashed pit blend line on entry/exit, solid white line alongside pit wall
+        if (pitWallActive || Math.floor(m / 4) % 2 === 0) {
+          ribbon(
+            meshes.paint,
+            p,
+            q,
+            end,
+            (t) => [
+              [edge(t, -0.28), 0.014],
+              [edge(t, -0.115), 0.014],
+            ],
+            false,
+            white,
+            1,
+          );
+        }
+        // Fast-lane white divider & working-box amber line inside the pit corridor
+        if (pitWallActive) {
+          ribbon(
+            meshes.paint,
+            p,
+            q,
+            end,
+            () => [
+              [11.35, 0.016],
+              [11.55, 0.016],
+            ],
+            false,
+            white,
+            1,
+          );
+          ribbon(
+            meshes.paint,
+            p,
+            q,
+            end,
+            () => [
+              [15.45, 0.016],
+              [15.68, 0.016],
+            ],
+            false,
+            [0.95, 0.72, 0.22],
+            1,
+          );
+        }
+      }
+      // Single-sided continuous outer impact face. Right wall normals face left and vice versa.
       const inside: Profile = (t) => [
         [wall(t), -0.16],
         [wall(t), 1.03],
       ];
       ribbon(wallCollision, p, q, end, inside, side < 0, [1, 1, 1], 2.2);
-      const pitWall = m < 465 || m > circuit.length - 84;
-      if (pitWall && side === 1) {
+      if (pitWallActive) {
+        // Double-sided concrete FIA pit wall separating main straight from the drivable pit lane
         ribbon(
           meshes.pitWall,
           p,
           q,
           end,
-          (t) => [
-            [wall(t), -0.12],
-            [wall(t), 0.2],
-            [wall(t) + side * 0.12, 0.55],
-            [wall(t) + side * 0.13, 1.03],
-            [wall(t) + side * 0.53, 1.03],
+          () => [
+            [PIT_WALL_D, -0.12],
+            [PIT_WALL_D, 0.2],
+            [PIT_WALL_D + 0.12, 0.55],
+            [PIT_WALL_D + 0.13, 1.04],
+            [PIT_WALL_D + 0.56, 1.04],
+            [PIT_WALL_D + 0.57, 0.55],
+            [PIT_WALL_D + 0.68, 0.2],
+            [PIT_WALL_D + 0.68, -0.12],
           ],
           false,
           [0.92, 0.89, 0.84],
+          2,
+        );
+        // Track-facing & pit-lane-facing Jolt colliders for the separating pit wall
+        ribbon(
+          pitWallCollision,
+          p,
+          q,
+          end,
+          () => [
+            [PIT_WALL_D, -0.16],
+            [PIT_WALL_D, 1.04],
+          ],
+          false,
+          [1, 1, 1],
+          2,
+        );
+        ribbon(
+          pitWallCollision,
+          p,
+          q,
+          end,
+          () => [
+            [PIT_WALL_D + 0.68, -0.16],
+            [PIT_WALL_D + 0.68, 1.04],
+          ],
+          true,
+          [1, 1, 1],
           2,
         );
       } else if (trap) {
@@ -281,13 +403,41 @@ export function makeRoad(circuit: Circuit) {
     }
     return { positions, indices, kind };
   };
+  // Painted pit boxes for all 10 teams (Bay 01 Player Box highlighted in FIA signal amber/red)
+  const addFlatQuad = (s0: number, s1: number, d0: number, d1: number, col: Vec, h = 0.018) => {
+    const p0 = circuit.at(s0), p1 = circuit.at(s1);
+    const a = vertex(meshes.paint, point(p0, d0, h), [0, 0], col);
+    const b = vertex(meshes.paint, point(p1, d0, h), [0, 1], col);
+    const c = vertex(meshes.paint, point(p1, d1, h), [1, 1], col);
+    const d = vertex(meshes.paint, point(p0, d1, h), [1, 0], col);
+    quad(meshes.paint, a, b, c, d);
+  };
+  for (let bay = 0; bay < 10; bay++) {
+    const bs = pitBoxStation(bay);
+    const col: Vec = bay === 0 ? [0.95, 0.34, 0.14] : white;
+    // Front & rear box bars + outer rails
+    addFlatQuad(bs - 3.1, bs - 2.9, PIT_BOX_D - 1.55, PIT_BOX_D + 1.55, col);
+    addFlatQuad(bs + 2.9, bs + 3.1, PIT_BOX_D - 1.55, PIT_BOX_D + 1.55, col);
+    addFlatQuad(bs - 3.1, bs + 3.1, PIT_BOX_D - 1.55, PIT_BOX_D - 1.38, col);
+    addFlatQuad(bs - 3.1, bs + 3.1, PIT_BOX_D + 1.38, PIT_BOX_D + 1.55, col);
+    if (bay === 0) {
+      // Bold illuminated stop stripe at nose of Player Pit Box
+      addFlatQuad(bs + 2.1, bs + 2.45, PIT_BOX_D - 1.3, PIT_BOX_D + 1.3, [0.98, 0.76, 0.18], 0.02);
+    }
+  }
+  // 60 km/h pit-entry and pit-exit FIA speed limit transverse lines
+  addFlatQuad(circuit.length - PIT_WALL_START_BACK - 2, circuit.length - PIT_WALL_START_BACK - 1.4, PIT_WALL_D + 0.7, 21.8, [0.95, 0.76, 0.2]);
+  addFlatQuad(PIT_WALL_END_S - 0.6, PIT_WALL_END_S, PIT_WALL_D + 0.7, 21.8, [0.22, 0.85, 0.45]);
+
   return {
     meshes,
     colliders: [
       collider(meshes.road, 'road'),
+      collider(meshes.pitApron, 'pit'),
       collider(meshes.kerb, 'kerb'),
       collider(runoffCollision, 'runoff'),
       collider(wallCollision, 'wall'),
+      collider(pitWallCollision, 'pitWall'),
     ],
   };
 }

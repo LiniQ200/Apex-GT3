@@ -102,7 +102,10 @@ function fallbackTexture(set, kind) {
       kerb: [165, 158, 151],
       terrain: [103, 108, 58],
       concrete: [148, 141, 129],
-    }[set];
+      gravel: [152, 134, 106],
+      bark: [94, 74, 56],
+      metal: [166, 170, 174],
+    }[set] ?? [128, 128, 128];
   const data = Buffer.alloc(size * size * 4);
   let seed = 42;
   for (let i = 0; i < data.length; i += 4) {
@@ -123,7 +126,7 @@ function fallbackTexture(set, kind) {
   }
   return jpeg.encode({ width: size, height: size, data }, 90).data;
 }
-function fallbackSky(damp) {
+function fallbackSky(mode) {
   const w = 128,
     h = 64,
     pixels = Buffer.alloc(w * h * 4);
@@ -131,10 +134,14 @@ function fallbackSky(damp) {
     for (let x = 0; x < w; x++) {
       const i = 4 * (x + w * y),
         t = Math.min(1, y / (h * 0.5)),
-        sun = Math.exp(-((x - 77) ** 2 + (y - 24) ** 2) / 5);
-      const rgb = damp
-        ? [0.34 + t * 0.3, 0.42 + t * 0.29, 0.53 + t * 0.2]
-        : [0.19 + t * 0.64 + 3 * sun, 0.34 + t * 0.38 + 2 * sun, 0.59 + t * 0.08 + sun];
+        sun = Math.exp(-((x - (mode === 'clear_midday' ? 64 : 77)) ** 2 + (y - (mode === 'clear_midday' ? 11 : 24)) ** 2) / 5);
+      const rgb = mode === 'heavy_rain'
+        ? [0.16 + t * 0.14, 0.20 + t * 0.16, 0.26 + t * 0.16]
+        : mode === 'overcast_race'
+          ? [0.34 + t * 0.3, 0.42 + t * 0.29, 0.53 + t * 0.2]
+          : mode === 'clear_midday'
+            ? [0.24 + t * 0.46 + 4.5 * sun, 0.46 + t * 0.36 + 4.4 * sun, 0.82 + t * 0.12 + 4.0 * sun]
+            : [0.19 + t * 0.64 + 3 * sun, 0.34 + t * 0.38 + 2 * sun, 0.59 + t * 0.08 + sun];
       const e = Math.floor(Math.log2(Math.max(...rgb))) + 1;
       rgb.forEach((v, k) => (pixels[i + k] = Math.round((v * 256) / 2 ** e)));
       pixels[i + 3] = 128 + e;
@@ -175,7 +182,7 @@ async function haven(set, slugs, sky = false) {
   for (const k of missing) {
     // The download failed again; retain the verified fallback without rewriting it.
     if (await cached(path(k))) continue;
-    await save(path(k), sky ? fallbackSky(set === 'overcast_race') : fallbackTexture(set, k), procedural);
+    await save(path(k), sky ? fallbackSky(set) : fallbackTexture(set, k), procedural);
   }
 }
 await model('ferrari_base', [
@@ -204,19 +211,38 @@ for (const lib of ['glslang', 'twgsl'])
   }
 await Promise.all([
   haven(
+    'clear_midday',
+    ['kloofendal_43d_clear_puresky', 'sunflowers_puresky', 'syferfontein_1d_clear_puresky'],
+    true,
+  ),
+  haven(
     'golden_hour',
     ['kloppenheim_06_puresky', 'evening_road_01_puresky', 'syferfontein_1d_clear_puresky'],
     true,
   ),
-  haven('overcast_race', ['kloofendal_48d_partly_cloudy_puresky', 'overcast_soil_puresky'], true),
+  haven('overcast_race', ['overcast_soil_puresky', 'kloofendal_48d_partly_cloudy_puresky'], true),
+  haven('heavy_rain', ['mud_road_puresky', 'approaching_storm', 'overcast_soil_puresky'], true),
   haven('asphalt', ['asphalt_02', 'asphalt_04']),
   haven('concrete', ['concrete_layers_02', 'concrete_wall_006']),
   haven('kerb', ['painted_plaster_wall', 'concrete_floor_painted']),
   haven('terrain', ['aerial_grass_rock', 'coast_sand_rocks_02']),
+  haven('gravel', ['ganges_river_pebbles', 'rocky_trail']),
+  haven('bark', ['pine_bark', 'bark_brown_02']),
+  haven('metal', ['corrugated_iron', 'metal_plate']),
 ]);
 await prepareTrackMaps({ root, assets, previous, cached, save });
-const foliage = 'foliage/italian-conifers.webp';
-await save(foliage, await readFile(`assets/${foliage}`), 'Valle d’Oro original / scripts/bake-foliage.py (CC0-1.0)');
+for (const [rel, src] of [
+  ['foliage/italian-conifers.webp', 'Valle d’Oro original / scripts/bake-foliage.py (CC0-1.0)'],
+  ['foliage/mediterranean-atlas.webp', 'Valle d’Oro original / scripts/bake-foliage-mediterranean.py (CC0-1.0)'],
+  ['kit/botanical.glb', 'Blender 4.3 botanical kit / scripts/blender_generate_circuit_kit.py (CC0-1.0)'],
+  ['kit/trackside.glb', 'Blender 4.3 FIA trackside kit / scripts/blender_generate_circuit_kit.py (CC0-1.0)'],
+  ['biome/rock_moss.glb', 'Poly Haven rock_moss_set_01 (CC0-1.0, compiled via glTF-Transform)'],
+  ['biome/fern.glb', 'Poly Haven fern_02 (CC0-1.0, compiled via glTF-Transform)'],
+  ['biome/shrub.glb', 'Poly Haven shrub_sorrel_01 (CC0-1.0, compiled via glTF-Transform)'],
+  ['biome/grass_clump.glb', 'Poly Haven grass_medium_01 (CC0-1.0, compiled via glTF-Transform)'],
+]) {
+  await save(rel, await readFile(`assets/${rel}`), src);
+}
 const notices = [];
 for (const [name, file] of [
   ['Babylon.js and included components', 'node_modules/@babylonjs/core/NOTICE.md'],

@@ -104,9 +104,12 @@ export const buildVehicle: BuildVehicle = async (scene, chassis, livery, number)
   let flashLight: PointLight | null = null;
   return {
     root,
-    update(d, dt, driverView = false) {
+    update(d, dt, driverView = false, weather = 'golden') {
       root.position.set(d.x, d.y, d.z);
       root.rotation.set(d.pitch, d.yaw, d.roll);
+      // Pneumatic internal GT3 air-jacks visibly lift the chassis (~7 cm) during pit service
+      const lift = clamp(d.airJackLiftM || 0, 0, 0.085);
+      body.position.y = lift;
       const cam = scene.activeCamera;
       // The helmet follows this frame's rig. The previous eye position can be
       // metres behind after one long frame; it must never select an exterior LOD.
@@ -140,16 +143,16 @@ export const buildVehicle: BuildVehicle = async (scene, chassis, livery, number)
         green = 0,
         blue = 0;
       for (let i = 0; i < 4; i++) {
-        // Temperatures come from the solver's actual brake impulse * speed
-        // and convective cooling. Leave unheated carbon ceramic charcoal-grey.
-        const t = clamp(((d.brakeTempC[i] ?? 20) - 320) / 460, 0, 1.35),
-          hot = Math.max(0, t - 0.25),
-          r = t * (0.55 + 2.8 * t),
-          g = hot * hot * 0.99,
-          b = hot * hot * 0.065;
+        // Thermal brake rotor glow: 250°C -> 850°C cherry-orange visible through wheel spokes
+        const t = clamp(((d.brakeTempC[i] ?? 20) - 250) / 560, 0, 1.35),
+          hot = Math.max(0, t - 0.22),
+          r = t * (0.58 + 2.9 * t),
+          g = hot * hot * 1.02,
+          b = hot * hot * 0.068;
         if (detail < 2) {
           const w = wheels[i];
-          w.hub.position.y = s.hubs[i].y + clamp(co[i] ?? restCompression, 0, 0.15) - restCompression;
+          // Wheels droop slightly off the ground when lifted on pneumatic air-jacks
+          w.hub.position.y = s.hubs[i].y + clamp(co[i] ?? restCompression, 0, 0.15) - restCompression + lift * 0.28;
           w.steer.rotation.y = i < 2 ? steer : 0;
           w.spin.rotation.x = d.wheelAngles?.[i] ?? d.wheelAngle;
           rotors[i].emissiveColor.set(r, g, b);
@@ -172,9 +175,17 @@ export const buildVehicle: BuildVehicle = async (scene, chassis, livery, number)
         -0.1,
         0.1,
       );
-      shadow.visibility = clamp(0.84 + (avg - restCompression) * 1.8, 0.74, 1);
+      shadow.visibility = clamp(0.84 + (avg - restCompression) * 1.8 - lift * 2.4, 0.58, 1);
       clock += Math.max(0, dt);
-      rain.emissiveIntensity = (clock + d.id * 0.07) % 1.2 < 0.35 ? 1 : 0.09;
+      // FIA 4 Hz flashing rear rain light in Damp / Heavy Rain; subtle heartbeat when dry
+      const wetWeather = weather === 'rain' || weather === 'damp';
+      rain.emissiveIntensity = wetWeather
+        ? (clock * 4 + d.id * 0.19) % 1 < 0.5
+          ? 2.2
+          : 0.12
+        : (clock + d.id * 0.07) % 1.2 < 0.35
+          ? 0.9
+          : 0.08;
       tail.emissiveIntensity = 0.83 + 4.2 * clamp(d.brake, 0, 1);
       if (lastGear > 0 && d.gear > lastGear && d.speed > 8) flash = 0.105;
       else if (lastThrottle > 0.58 && d.throttle < 0.13 && d.rpm > 4900 && d.speed > 14) flash = 0.065;

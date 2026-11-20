@@ -1,5 +1,13 @@
 import type { Circuit, Driver, Settings } from '../types';
 import { STEP, clamp, wrapAngle, type Controls } from '../physics/world';
+import {
+  PIT_BOX_D,
+  PIT_ENTRY_START_BACK,
+  PIT_FAST_LANE_D,
+  PIT_SPEED_LIMIT_MS,
+  PIT_WALL_END_S,
+  PIT_WALL_START_BACK,
+} from '../track/circuit';
 
 export function createPilots(track: Circuit) {
   // Integrate the braking envelope backwards; a blind bend beyond the current
@@ -13,36 +21,92 @@ export function createPilots(track: Circuit) {
     const n = i % count;
     limit[n] = Math.min(limit[n], Math.sqrt(limit[(n + 1) % count] ** 2 + 2 * 10.4 * spacing));
   }
-  const plans: { startLane: number; lane: number; rival: number; side: number }[] = [];
+  const plans: { startLane: number; lane: number; rival: number; side: number; wantPit: boolean }[] = [];
   const gapTo = (d: Driver, r: Driver) => {
     const gap = r.s - d.s;
     return gap > track.length / 2 ? gap - track.length : gap < -track.length / 2 ? gap + track.length : gap;
   };
+  const hasPitLane = track.length >= 1000;
+
   function pilot(d: Driver, grid: Driver[], opts: Settings): Controls {
+    const plan = (plans[d.id] ??= { startLane: d.d, lane: d.d, rival: -1, side: 0, wantPit: false });
+
+    // Weather-smart AI pit strategy: swap dry slicks <-> wet treaded when conditions mismatch
+    if (hasPitLane && d.id !== 0) {
+      const wetTrack = opts.weather === 'rain' || opts.weather === 'damp';
+      const wrongTires =
+        (opts.weather === 'rain' && d.compound !== 'wet') ||
+        ((opts.weather === 'clear' || opts.weather === 'golden') && d.compound === 'wet') ||
+        Math.min(...d.tireWear) < 0.28 ||
+        d.fuelL < 5;
+      // Stagger AI pit entries so the entire grid doesn't queue in pit entry at once
+      if (wrongTires && d.pitState === 'track' && d.distance > 1800 && d.s > track.length - 420 && d.s < track.length - 140) {
+        if ((d.id + Math.floor(d.completedLaps)) % 2 === 0 || opts.weather === 'rain') {
+          plan.wantPit = true;
+        }
+      }
+      if (!wrongTires && d.pitState === 'track') plan.wantPit = false;
+
+      // Guide car smoothly through pit entry, 60 km/h pit lane, assigned pit box, and pit exit merge
+      if (d.pitState !== 'track' || (plan.wantPit && d.s > track.length - PIT_ENTRY_START_BACK - 15)) {
+        if (d.pitState === 'servicing') {
+          plan.wantPit = false;
+          return { right: 0, throttle: 0, brake: 1, handbrake: 1, draft: 0 };
+        }
+        let targetD = PIT_FAST_LANE_D;
+        let targetSpeed = PIT_SPEED_LIMIT_MS - 0.5;
+        if (d.pitState === 'exit') {
+          targetD = d.s > PIT_WALL_END_S + 8 ? 5.2 : PIT_FAST_LANE_D;
+          targetSpeed = d.s > PIT_WALL_END_S + 2 ? 32 : PIT_SPEED_LIMIT_MS - 0.5;
+        } else if (d.s < PIT_WALL_END_S && d.pitState !== 'track') {
+          const distBox = d.pitBoxS - d.s;
+          if (distBox < 24 && distBox > -3) {
+            targetD = PIT_BOX_D;
+            targetSpeed = distBox < 2.2 ? 0 : clamp(distBox * 0.62, 1.5, 11);
+          }
+        } else if (d.s > track.length - PIT_WALL_START_BACK - 45) {
+          targetD = PIT_FAST_LANE_D;
+          targetSpeed = PIT_SPEED_LIMIT_MS - 1.0;
+        }
+        const lookPit = 11;
+        const aim = track.at(d.s + lookPit, targetD);
+        const bearing = wrapAngle(Math.atan2(aim.x - d.x, aim.z - d.z) - d.yaw);
+        const steer = Math.atan2(2 * 2.64 * Math.sin(bearing), lookPit) * 2.1;
+        const err = targetSpeed - d.speed;
+        const hold = targetSpeed < 0.6 && d.speed < 2.0;
+        return {
+          right: clamp(steer, -1, 1),
+          throttle: hold ? 0 : clamp(err * 0.45, 0, 0.75),
+          brake: hold ? 1 : clamp(-err * 0.48, 0, 1),
+          handbrake: 0,
+          draft: 0,
+        };
+      }
+    }
+
     const at = Math.floor(d.s / spacing) % count,
       pace = { clubman: 0.86, pro: 0.96, platinum: 1.02 }[opts.pace],
       variation = d.id === 0 ? 1 : 1 + ((d.id % 4) - 1.5) * 0.012;
-    let speed = limit[(at + 1) % count] * pace * variation * (opts.weather === 'damp' ? 0.943 : 1),
+    const weatherPace = opts.weather === 'rain' ? 0.855 : opts.weather === 'damp' ? 0.935 : 1.0;
+    let speed = limit[(at + 1) % count] * pace * variation * weatherPace,
       draft = 0;
     const look = clamp(5 + d.speed * 0.48, 7, 38),
       bend = track.at(d.s + look),
       edge = bend.halfWidth - 1.6,
       clearance = 3.35,
       opening = clamp((850 - d.distance) / 110, 0, 1),
-      plan = (plans[d.id] ??= { startLane: d.d, lane: d.d, rival: -1, side: 0 }),
       line = opening * plan.startLane + (1 - opening) * clamp(bend.kappa * 125, -2.5, 2.5);
     let left = -edge,
       right = edge,
       nearest = Infinity;
     let passing: Driver | undefined;
     for (const r of grid) {
-      if (r === d) continue;
+      if (r === d || r.pitState !== 'track') continue;
       const gap = gapTo(d, r),
         lateral = r.d - d.d,
         closing = d.speed - r.speed;
       if (r.id === plan.rival && gap >= -10 && gap < 110) passing = r;
       if (gap > 4.5 && gap < 35 && Math.abs(lateral) < 2.3) draft = Math.max(draft, (35 - gap) / 30);
-      // Keep an overlap, including a faster car about to reach our rear quarter.
       if (gap > -8 - Math.max(0, -closing) * 0.9 && gap < 7 && Math.abs(lateral) > 0.65) {
         if (lateral > 0) right = Math.min(right, r.d - clearance);
         else left = Math.max(left, r.d + clearance);
@@ -62,7 +126,7 @@ export function createPilots(track: Circuit) {
       if (lane < left || lane > right) return false;
       const front = gapTo(d, target) + 7;
       return !grid.some((r) => {
-        if (r === d || r === target) return false;
+        if (r === d || r === target || r.pitState !== 'track') return false;
         const gap = gapTo(d, r),
           projected = gap + (r.speed - d.speed) * 1.2;
         if (Math.abs(r.d - lane) < 2.7)
@@ -77,10 +141,8 @@ export function createPilots(track: Circuit) {
       plan.rival = -1;
       if (Number.isFinite(nearest)) {
         let best = Infinity;
-        // Two cars abreast can close both sides of the nearest car while
-        // leaving a clear route around the outside of the second one.
         for (const target of grid) {
-          if (target === d || Math.abs(gapTo(d, target) - nearest) > 5) continue;
+          if (target === d || target.pitState !== 'track' || Math.abs(gapTo(d, target) - nearest) > 5) continue;
           for (const side of [-1, 1]) {
             const lane = target.d + side * clearance;
             if (!available(lane, target)) continue;
@@ -98,11 +160,9 @@ export function createPilots(track: Circuit) {
     const wanted = passing ? passing.d + plan.side * clearance : line;
     const lane = left <= right ? clamp(wanted, left, right) : clamp(d.d, -edge, edge);
     plan.lane += clamp(lane - plan.lane, -STEP * 3.5, STEP * 3.5);
-    // At walking speed two aligned GT3s can fit more closely; at racing
-    // speed allow for yaw, tyre slip and the time needed to steer away.
     const width = 2.35 + Math.min(0.4, d.speed * 0.008);
     for (const r of grid) {
-      if (r === d) continue;
+      if (r === d || r.pitState !== 'track') continue;
       const gap = gapTo(d, r);
       if (
         gap <= 0 ||
@@ -111,12 +171,9 @@ export function createPilots(track: Circuit) {
         r.d > Math.max(d.d, plan.lane) + width
       )
         continue;
-      // Brake for the available distance even when a pass is planned: asking to
-      // change lane is not the same as already clearing the other car's body.
-      // Leave enough room to steer out from behind a stopped queue when it opens.
       const standOff = r.speed < 1 ? (passing && Math.abs(r.d - lane) > 2.7 ? 4.9 : 19) : 6.2;
       const room = gap - (standOff + 0.11 * d.speed),
-        decel = opts.weather === 'damp' ? 7.4 : 8.4;
+        decel = opts.weather === 'rain' ? 6.2 : opts.weather === 'damp' ? 7.4 : 8.4;
       speed = Math.min(
         speed,
         Math.max(0, r.speed + room * 0.88),

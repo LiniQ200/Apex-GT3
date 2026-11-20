@@ -38,7 +38,10 @@ function direction(face, x, y, size) {
   }
 }
 
-function panorama(bytes, wet) {
+function panorama(bytes, mode) {
+  const wet = mode === 'overcast_race' || mode === 'heavy_rain';
+  const storm = mode === 'heavy_rain';
+  const clear = mode === 'clear_midday';
   const header = RGBE_ReadHeader(bytes),
     { width, height } = header;
   const data = RGBE_ReadPixels(bytes, header);
@@ -47,11 +50,22 @@ function panorama(bytes, wet) {
   for (let i = 0; i < data.length; i += 3) {
     const l = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
     peak = Math.max(peak, l);
-    // Diffuse the overcast plate's uncovered solar disc (>72,000) through cloud
-    // in scene-linear light, before any filtering or half-float GPU storage.
-    const t = wet && l > 2 ? (2 + 0.48 * Math.log1p(l - 2)) / l : 1;
+    // Diffuse overcast/storm plates' solar disc through cloud in scene-linear
+    // light, and softly roll off extreme 100k+ midday sun pixels so 8-bit RGBD
+    // preserves crisp blue sky gradients without crushing sky luminance.
+    const t = wet && l > (storm ? 1.4 : 2)
+      ? ((storm ? 1.4 : 2) + 0.42 * Math.log1p(l - (storm ? 1.4 : 2))) / l
+      : clear && l > 24
+        ? (24 + 4.5 * Math.log1p(l - 24)) / l
+        : 1;
+    const stormScale = storm ? 0.56 : 1;
     for (let c = 0; c < 3; c++) {
-      if (wet) data[i + c] = t * (0.25 * data[i + c] + 0.75 * l);
+      if (wet) {
+        const tint = storm ? (c === 2 ? 1.12 : c === 0 ? 0.88 : 0.96) : 1;
+        data[i + c] = t * stormScale * tint * (0.25 * data[i + c] + 0.75 * l);
+      } else if (t !== 1) {
+        data[i + c] *= t;
+      }
       cloudPeak = Math.max(cloudPeak, data[i + c]);
     }
   }
@@ -240,8 +254,9 @@ function rgbdPng(rgb, size) {
   ]);
 }
 
-function bake(input, wet) {
-  const source = panorama(input, wet),
+function bake(input, mode) {
+  const wet = mode === 'overcast_race' || mode === 'heavy_rain';
+  const source = panorama(input, mode),
     cube = {
       size: SIZE,
       format: Constants.TEXTUREFORMAT_RGB,
@@ -338,7 +353,7 @@ try {
   /* Interrupted/corrupt cache: rebuild from the verified originals. */
 }
 const assets = {};
-for (const name of ['golden_hour', 'overcast_race']) {
+for (const name of ['clear_midday', 'golden_hour', 'overcast_race', 'heavy_rain']) {
   const src = `skies/${name}.hdr`,
     dst = `skies/${name}.env`,
     input = await readFile(root + src),
@@ -354,7 +369,7 @@ for (const name of ['golden_hour', 'overcast_race']) {
       continue;
     }
   }
-  const { bytes, ...stats } = bake(input, name === 'overcast_race');
+  const { bytes, ...stats } = bake(input, name);
   await replace(root + dst, bytes);
   assets[dst] = {
     bytes: bytes.length,

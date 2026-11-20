@@ -3,6 +3,29 @@ import type { Circuit, SurfaceId, TrackPoint } from '../types';
 // Back to front: the player occupies the last box, at the lap-timing seam.
 export const sprintGrid = Array.from({ length: 10 }, (_, i) => ({ s: 6 * i, d: i % 2 ? 2.8 : -2.8 }));
 
+// Pit lane geometry constants along the main straight (+d right side).
+// Pit entry branches off cleanly at L-120..L-52; concrete pit wall separates
+// track from pit apron at s in [L-52..L) U [0..250]; pit exit merges at 250..365.
+export const PIT_WALL_D = 9.4;
+export const PIT_FAST_LANE_D = 13.6;
+export const PIT_BOX_D = 17.2;
+export const PIT_OUTER_WALL_D = 22.0;
+export const PIT_ENTRY_START_BACK = 128; // metres before lap line
+export const PIT_WALL_START_BACK = 52;   // metres before lap line
+export const PIT_WALL_END_S = 250;       // metres after lap line
+export const PIT_EXIT_END_S = 368;       // metres after lap line
+export const PIT_SPEED_LIMIT_MS = 60 / 3.6; // 60 km/h FIA pit speed limit
+export const pitBoxStation = (driverId: number) => 70 + driverId * 16;
+
+export function isInPitCorridor(s: number, d: number, length: number) {
+  const inLon = s >= length - PIT_WALL_START_BACK - 8 || s <= PIT_WALL_END_S + 2;
+  return inLon && d > PIT_WALL_D + 0.2;
+}
+
+export function isInPitBranch(s: number, length: number) {
+  return s >= length - PIT_ENTRY_START_BACK || s <= PIT_EXIT_END_S;
+}
+
 // Survey coordinates in metres. North (+Z) is the direction of the start straight.
 const survey = [
   [0, 0],
@@ -219,12 +242,26 @@ export function wallOffset(p: TrackPoint, side: number, length: number) {
   // The chicane's right-hand trap is outside the first bend but inside the
   // second. Finish tapering its wall before the tight return apex.
   const outside = side === -1 ? flare(585, 825) + flare(2670, 3100) : flare(1595, 1810) + flare(2390, 2415);
-  // The occupied pit lane is separated from the live racing surface by the pit wall.
-  return p.halfWidth + 8.6 + outside * 8.5 + (side === 1 ? -6.9 : -2.5) * pit;
+  if (side === 1) {
+    // Right side opens smoothly into the drivable FIA pit lane complex along the main straight.
+    const pitOpen =
+      smooth(length - PIT_ENTRY_START_BACK - 25, length - PIT_WALL_START_BACK - 6, p.s) +
+      (1 - smooth(PIT_WALL_END_S + 8, PIT_EXIT_END_S + 16, p.s));
+    const base = p.halfWidth + 8.6 + outside * 8.5 - 6.9 * pit;
+    const openFrac = clamp(pitOpen);
+    return base + (PIT_OUTER_WALL_D - base) * openFrac;
+  }
+  return p.halfWidth + 8.6 + outside * 8.5 - 2.5 * pit;
 }
-function surface(p: TrackPoint, d: number): SurfaceId {
+function surface(p: TrackPoint, d: number, length: number): SurfaceId {
+  if (d > PIT_WALL_D + 0.2 && isInPitBranch(p.s, length)) return 'pit';
   const edge = Math.abs(d) - p.halfWidth;
-  if (edge <= 0) return Math.abs(d - groove(p)) < 1.45 ? 'groove' : 'asphalt';
+  if (edge <= 0) {
+    const distG = Math.abs(d - groove(p));
+    if (distG < 1.45) return 'groove';
+    if (distG > 3.6 && Math.abs(p.kappa) > 0.0025) return 'marbles';
+    return 'asphalt';
+  }
   if (hasKerb(p.s) && edge < kerbWidth) return 'kerb';
   return trapSide(p.s) === Math.sign(d) && edge > 2.65 ? 'gravel' : 'grass';
 }
@@ -330,7 +367,7 @@ export function createCircuit(): Circuit {
       p = at(p.s + Math.max(-step, Math.min(step, correction)));
     }
     const d = (x - p.x) * Math.cos(p.yaw) - (z - p.z) * Math.sin(p.yaw);
-    return { s: p.s, d, surface: surface(p, d) };
+    return { s: p.s, d, surface: surface(p, d, length) };
   }
   return { length, samples, at, nearest };
 }

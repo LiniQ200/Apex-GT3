@@ -103,14 +103,20 @@ function instruments(scene: Scene, concept: boolean) {
       const rpm = Math.round(d.rpm / 50) * 50,
         speed = Math.round(d.speed * 3.6),
         brake = Math.round(Math.min(1, Math.max(0, d.brake)) * 100);
-      const readout = [d.gear, rpm, speed, brake, d.absActive].join('/');
+      const limFlash = d.pitLimiter ? Math.floor(now / 200) % 2 : -1;
+      const readout = [d.gear, rpm, speed, brake, d.absActive, limFlash].join('/');
       if (last === readout) return;
       last = readout;
       rect('#0d141a', 0, 0, 704, 256);
-      // Shift rail reaches red just before the real 8080 rpm automatic shift.
+      // Shift rail flashes blue/amber under 60 km/h pit limiter; otherwise tracks 8080 rpm shift
       for (let i = 0; i < 14; i++) {
-        const on = rpm >= 4650 + i * 255;
-        rect(on ? (i < 6 ? '#71f0ac' : i < 10 ? '#ffd662' : '#ff573d') : '#283139', 31 + i * 46, 12, 39, 18);
+        if (d.pitLimiter) {
+          const on = (i % 2 === 0) === (limFlash === 0);
+          rect(on ? (i % 2 === 0 ? '#3da9fc' : '#ffd662') : '#232e38', 31 + i * 46, 12, 39, 18);
+        } else {
+          const on = rpm >= 4650 + i * 255;
+          rect(on ? (i < 6 ? '#71f0ac' : i < 10 ? '#ffd662' : '#ff573d') : '#283139', 31 + i * 46, 12, 39, 18);
+        }
       }
       rect('#26383e', 24, 44, 656, 2);
       // Keep the gear and both units inside the clear arc of the rotating rim.

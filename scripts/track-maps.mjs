@@ -74,7 +74,15 @@ function asphaltDressing(diffuse) {
 }
 
 export async function prepareTrackMaps({ root, assets, previous, cached, save }) {
-  for (const [set, detail] of [['asphalt', 1024], ['terrain', 1024], ['concrete', 512], ['kerb', 512]]) {
+  for (const [set, detail] of [
+    ['asphalt', 1024],
+    ['terrain', 1024],
+    ['concrete', 512],
+    ['kerb', 512],
+    ['gravel', 512],
+    ['bark', 512],
+    ['metal', 512],
+  ]) {
     let dress;
     const decode = async part => jpeg.decode(await readFile(`${root}${set}/${part}.jpg`), { useTArray: true, formatAsRGBA: false });
     for (const [name, parts, limit, quality] of [

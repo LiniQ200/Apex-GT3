@@ -77,6 +77,10 @@ test('every contact triangle has the required Jolt front face', () => {
         nz = ux * vy - uy * vx,
         len = Math.hypot(nx, ny, nz);
       assert.ok(Number.isFinite(len) && len > 1e-6);
+      if (kind === 'pitWall') {
+        assert.ok(Math.abs(ny / len) < 0.1, 'pit wall faces must be vertical');
+        continue;
+      }
       if (kind !== 'wall') {
         assert.ok(ny / len > 0.9);
         continue;

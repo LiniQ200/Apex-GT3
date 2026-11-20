@@ -2,13 +2,13 @@
 
 Race nine opponents over three laps of Autodromo Valle d’Oro, or select **Hotlap qualifying** for a solo session. Choose a car and livery in the garage, then **Drive**. Wait for all five red lights to go out. The pit wall shows upcoming turns, estimated entry speeds and cars alongside.
 
-**Driving:** W/S or ↑/↓ for throttle and brake, A/D or ←/→ to steer. C changes camera, B looks back, R rejoins if there is space, and Esc pauses. Touchscreens have two-thumb steering and pedals. Gamepads use the left stick and triggers. The garage’s **Controls** menu lists the remaining bindings.
+**Driving:** W/S or ↑/↓ for throttle and brake, A/D or ←/→ to steer. C changes camera, B looks back, V cycles live weather (Clear Midday, Golden Hour, Overcast/Damp, Heavy Rain), P opens the MoTeC Pit Strategy MFD, L toggles the 60 km/h pit limiter, T/Y adjust TC and ABS (0–10), R rejoins if there is space, and Esc pauses. Touchscreens have two-thumb steering and pedals. Gamepads use the left stick and triggers.
 
 In the cockpit, read the instruments in the car. Select **MoTeC C127** to open the full telemetry panel; it remembers your choice separately for cockpit and exterior cameras during the session.
 
 ## Play a downloaded release
 
-Phones and computers open the same 3D game. Use a current browser with WebGPU or WebGL 2 and graphics acceleration. **High** (default) renders at your display’s pixel density up to a 1920×1080 pixel budget. **Ultra** raises the budget to 2560×1440 and increases shadow resolution. Choose **Balanced** if you need more speed: it adjusts race resolution to measured frame times. All three use the same cars, foliage, lighting and 120 Hz physics. None uses motion blur, screen-space reflections or a sharpening filter. Devices without either graphics API cannot run this game.
+Phones and computers open the same 3D game. Use a current browser with WebGPU or WebGL 2 and graphics acceleration. The engine runs a single locked **Native 1080p Direct Forward PBR** pipeline with 4× hardware MSAA, 16× anisotropic texture filtering, Khronos PBR Neutral tone mapping, 4-cascade stabilized sun shadows, and strictly zero motion blur or muddy post-processing. Devices without either graphics API cannot run this game.
 
 If launch stalls, select **Launch with WebGL 2** on the loading screen. This runs the same cars, lighting and circuit without waiting for a WebGPU device. Open the link directly in your browser if an embedded preview blocks 3D graphics.
 

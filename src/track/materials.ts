@@ -6,6 +6,8 @@ import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
 import type { Circuit, Weather } from '../types';
 import { groove } from './circuit';
+import { TrackSurfaceGrid, weatherBaseWetness } from './surfaceState';
+import { PorousSurfacePlugin } from './trackShader';
 
 export function randomSource(seed: number) {
   return () => {
@@ -25,33 +27,35 @@ function surfaceData(m: PBRMaterial, orm: PBRMaterial['metallicTexture']) {
   m.useRoughnessFromMetallicTextureAlpha = false;
   m.useRoughnessFromMetallicTextureGreen = true;
   m.useMetallnessFromMetallicTextureBlue = true;
-  m.ambientTextureStrength = 0.55;
+  m.ambientTextureStrength = 0.6;
 }
 function mapped(scene: Scene, name: string) {
   const m = plain(scene, name),
     map = (part: 'albedo' | 'normal' | 'orm') => {
       const color = part === 'albedo';
       const t = new Texture(`${import.meta.env.BASE_URL}assets/${name}/${part}.jpg`, scene, {
-        noMipmap: false, samplingMode: Texture.TRILINEAR_SAMPLINGMODE,
-        gammaSpace: color, useSRGBBuffer: color,
+        noMipmap: false,
+        samplingMode: Texture.TRILINEAR_SAMPLINGMODE,
+        gammaSpace: color,
+        useSRGBBuffer: color,
       });
-      // Keep colour detail at driver-height grazing angles. The lower-frequency
-      // linear data needs fewer taps; only albedo gets the sRGB transfer.
-      t.anisotropicFilteringLevel = color ? 8 : 4;
+      // Pin-sharp 16x anisotropic filtering on every road, kerb, pit-lane, bark & terrain map
+      t.anisotropicFilteringLevel = 16;
       return t;
     };
   m.albedoTexture = map('albedo');
   m.bumpTexture = map('normal');
-  m.bumpTexture.level = 0.52;
+  m.bumpTexture.level = 0.62;
   surfaceData(m, map('orm'));
   m.roughness = 1;
   return m;
 }
 
 function lapSurface(scene: Scene, c: Circuit) {
-  // About 7–8 cm across the lane, 1 m along it. Rasterise the narrow tyre
-  // marks on the CPU; only the finished, packed atlas goes to the GPU.
-  const engine = scene.getEngine(), w = 192, h = Math.min(4096, engine.getCaps().maxTextureSize);
+  // Static high-frequency tyre marks, braking skids, and resurfacing bands on UV2.
+  const engine = scene.getEngine(),
+    w = 192,
+    h = Math.min(4096, engine.getCaps().maxTextureSize);
   const ctx = engine.createCanvas(w, h).getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D,
     rand = randomSource(41);
   const stationX = (s: number, offset: number) => {
@@ -60,11 +64,19 @@ function lapSurface(scene: Scene, c: Circuit) {
   };
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, w, h);
-  // Multiple narrow profiles instead of a painted black centre stripe. V spans the
-  // whole lap once; all higher-frequency stone maps remain on metric UV1.
   const grad = ctx.createLinearGradient(-1, 0, 1, 0);
-  for (const [u, v] of [[0, 255], [0.15, 237], [0.32, 204], [0.39, 185], [0.47, 201],
-    [0.58, 192], [0.67, 180], [0.82, 225], [1, 255]]) grad.addColorStop(u, `rgb(${v},${v},${v})`);
+  for (const [u, v] of [
+    [0, 255],
+    [0.15, 237],
+    [0.32, 204],
+    [0.39, 185],
+    [0.47, 201],
+    [0.58, 192],
+    [0.67, 180],
+    [0.82, 225],
+    [1, 255],
+  ])
+    grad.addColorStop(u, `rgb(${v},${v},${v})`);
   ctx.fillStyle = grad;
   for (let y = 0; y < h; y += 3) {
     const p = c.at((y / h) * c.length),
@@ -74,16 +86,15 @@ function lapSurface(scene: Scene, c: Circuit) {
     ctx.fillRect(-1, y, 2, 3);
   }
   ctx.resetTransform();
-  // Long, slightly mismatched resurfacing passes break the metre-scale repeat
-  // without adding a second tiled albedo or a noise shader at grazing angles.
   const paving = randomSource(513);
   for (const side of [-1, 1])
-    for (let y = 0; y < h;) {
-      const run = 35 + paving() * 170, band = (0.17 + 0.13 * paving()) * w;
+    for (let y = 0; y < h; ) {
+      const run = 35 + paving() * 170,
+        band = (0.17 + 0.13 * paving()) * w;
       ctx.fillStyle = `rgba(79,79,79,${0.025 + 0.045 * paving()})`;
       ctx.fillRect(side < 0 ? 0 : w - band, y, band, run);
-      // Infrequent short sealed joints, not an identical full-length crack in every tile.
-      const metres = ((y + 0.5) / h) * c.length, across = w / (2 * c.at(metres).halfWidth);
+      const metres = ((y + 0.5) / h) * c.length,
+        across = w / (2 * c.at(metres).halfWidth);
       const edge = (side < 0 ? band : w - band) / across;
       ctx.save();
       ctx.scale(across, h / c.length);
@@ -91,14 +102,13 @@ function lapSurface(scene: Scene, c: Circuit) {
       ctx.lineWidth = 0.035 + 0.035 * paving();
       ctx.beginPath();
       ctx.moveTo(edge, metres);
-      for (let s = 2; s < run * 0.56 * c.length / h; s += 2)
+      for (let s = 2; s < (run * 0.56 * c.length) / h; s += 2)
         ctx.lineTo(edge + 0.05 * Math.sin(s * 0.34) + 0.06 * paving(), metres + s);
       ctx.stroke();
       ctx.restore();
       y += run + 6 + paving() * 64;
     }
   for (const apex of [697, 1695, 2490, 2840]) {
-    // Stroke in road metres so a turning tyre doesn't smear across the apex.
     const across = w / (2 * c.at(apex).halfWidth);
     ctx.save();
     ctx.scale(across, h / c.length);
@@ -124,15 +134,18 @@ function lapSurface(scene: Scene, c: Circuit) {
     }
     ctx.restore();
   }
-  // A short pair at each rear axle: slip builds, then fades as the tyre hooks up.
-  // The rows are 12 m apart; overlapping opaque stamps read as continuous rails.
   for (let i = 0; i < 10; i++) {
-    const p = c.at(i * 6), across = w / (2 * p.halfWidth), along = h / c.length;
-    const start = Math.max(0, p.s - 1.35), length = 4.5 + rand() * 5, drift = (rand() - 0.5) * 0.17;
+    const p = c.at(i * 6),
+      across = w / (2 * p.halfWidth),
+      along = h / c.length;
+    const start = Math.max(0, p.s - 1.35),
+      length = 4.5 + rand() * 5,
+      drift = (rand() - 0.5) * 0.17;
     ctx.save();
     ctx.scale(across, along);
     for (const tire of [-0.78, 0.78]) {
-      const x = p.halfWidth + (i % 2 ? 2.8 : -2.8) + tire, end = start + length + rand();
+      const x = p.halfWidth + (i % 2 ? 2.8 : -2.8) + tire,
+        end = start + length + rand();
       const fade = ctx.createLinearGradient(0, start, 0, end);
       fade.addColorStop(0, 'rgba(72,72,72,0)');
       fade.addColorStop(0.2, 'rgba(72,72,72,.28)');
@@ -147,84 +160,103 @@ function lapSurface(scene: Scene, c: Circuit) {
     }
     ctx.restore();
   }
-  // UV2 R dyes the aggregate (not the final lit pixel). B changes only the
-  // roughness of damp asphalt. Interpolate drainage between survey stations;
-  // traffic pumps water off the racing line, crossfall leaves more on the low side.
   const { data } = ctx.getImageData(0, 0, w, h);
-  const spans = 8, rows = 256, stride = spans + 1;
-  const hollows = Float32Array.from({ length: rows * stride }, randomSource(915));
-  const across = new Float32Array(stride);
-  // Babylon squares its linear detail-albedo multiplier; 0.5 is unity.
   const dye = Float32Array.from({ length: 256 }, (_, value) => 127.5 * Math.sqrt(value / 255));
-  const smooth = (v: number) => v * v * (3 - 2 * v);
-  for (let y = 0; y < h; y++) {
-    const v = (y + 0.5) / h, p = c.at(v * c.length), line = groove(p);
-    for (let j = 0; j < stride; j++) {
-      // Offset adjacent columns so their hollows do not end on the same transect.
-      const k = v * rows + j * 0.39, row = Math.floor(k);
-      const a = hollows[(row % rows) * stride + j], b = hollows[((row + 1) % rows) * stride + j];
-      across[j] = a + (b - a) * smooth(k - row);
-    }
-    for (let x = 0; x < w; x++) {
-      const u = (x + 0.5) / w, d = (2 * u - 1) * p.halfWidth;
-      const j = Math.floor(u * spans), hollow = across[j] + (across[j + 1] - across[j]) * smooth(u * spans - j);
-      const swept = Math.max(0, 1 - Math.abs(d - line) / 2.6);
-      const film = Math.max(0, Math.min(1, (hollow - 0.2) * 1.4 - swept * 0.43 - p.bank * d * 0.52));
-      const i = 4 * (y * w + x);
-      data[i] = dye[data[i]] * (1 - 0.06 * film);
-      data[i + 1] = data[i + 3] = 128; // Neutral tangent detail. Normals come from the scan.
-      data[i + 2] = 144 - 120 * film;
-    }
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = dye[data[i]];
+    data[i + 1] = data[i + 3] = 128;
+    data[i + 2] = 128;
   }
   const t = RawTexture.CreateRGBATexture(data, w, h, scene, true, false, Texture.TRILINEAR_SAMPLINGMODE);
-  t.name = 'lap rubber and drainage — UV2';
+  t.name = 'lap rubber wear — UV2';
   t.coordinatesIndex = 1;
   t.gammaSpace = false;
   t.wrapU = Texture.CLAMP_ADDRESSMODE;
   t.wrapV = Texture.WRAP_ADDRESSMODE;
-  t.anisotropicFilteringLevel = 4;
+  t.anisotropicFilteringLevel = 16;
   return t;
 }
 
-export function roadMaterials(scene: Scene, c: Circuit) {
+export function roadMaterials(scene: Scene, c: Circuit, surfaceGrid?: TrackSurfaceGrid) {
   const road = mapped(scene, 'asphalt'),
     grass = mapped(scene, 'terrain'),
     kerb = mapped(scene, 'kerb'),
-    concrete = mapped(scene, 'concrete');
+    concrete = mapped(scene, 'concrete'),
+    gravel = mapped(scene, 'gravel'),
+    metal = mapped(scene, 'metal');
+
+  // Dynamic Track-State GPU Data Texture (16 lanes x 256 sectors RGBA)
+  const grid = surfaceGrid ?? new TrackSurfaceGrid(c);
+  grid.syncBytes();
+  const stateTex = RawTexture.CreateRGBATexture(
+    grid.rgba,
+    grid.width,
+    grid.height,
+    scene,
+    false,
+    false,
+    Texture.BILINEAR_SAMPLINGMODE,
+  );
+  stateTex.name = 'dynamic track state grid';
+  stateTex.gammaSpace = false;
+  stateTex.wrapU = Texture.CLAMP_ADDRESSMODE;
+  stateTex.wrapV = Texture.WRAP_ADDRESSMODE;
+
   road.detailMap.texture = lapSurface(scene, c);
   road.detailMap.bumpLevel = 0;
+  road.detailMap.roughnessBlendLevel = 0;
+  road.detailMap.diffuseBlendLevel = 0.85;
   road.detailMap.isEnabled = true;
-  kerb.albedoTexture!.level = 1.16; // The neutral plaster scan sits underneath the red/white instance pigments.
-  grass.albedoColor = new Color3(0.49, 0.89, 0.61);
-  grass.bumpTexture!.level = 0.5;
-  // Raked gravel uses local neutral aggregate rather than green terrain albedo.
-  const gravel = plain(scene, 'pozzolana');
-  gravel.albedoTexture = concrete.albedoTexture;
-  gravel.bumpTexture = grass.bumpTexture;
-  surfaceData(gravel, grass.metallicTexture);
-  gravel.roughness = 1;
-  const paint = plain(scene, 'track enamel', 0.68),
-    wall = plain(scene, 'galvanised rail', 0.46, 0.55);
-  wall.albedoColor = new Color3(0.92, 0.92, 0.9);
-  // Same GPU texture; the shallow rail tooling must not change the pit wall's normal strength.
-  wall.bumpTexture = concrete.bumpTexture!.clone();
-  wall.bumpTexture!.level = 0.17;
+
+  // Cross-backend WGSL + GLSL Hex-Grid Stochastic Anti-Tiling & Porous Wetness plugins
+  const roadPlugin = new PorousSurfacePlugin(road, { isRoad: true, hexBomb: true, trackStateTexture: stateTex });
+  const grassPlugin = new PorousSurfacePlugin(grass, { isRoad: false, hexBomb: true });
+  const gravelPlugin = new PorousSurfacePlugin(gravel, { isRoad: false, hexBomb: true });
+  const concretePlugin = new PorousSurfacePlugin(concrete, { isRoad: false, hexBomb: true });
+
+  kerb.albedoTexture!.level = 1.16;
+  grass.albedoColor = new Color3(0.54, 0.90, 0.62);
+  grass.bumpTexture!.level = 0.55;
+  gravel.albedoColor = new Color3(0.95, 0.87, 0.74);
+  gravel.bumpTexture!.level = 0.72;
+
+  const paint = plain(scene, 'track enamel', 0.68);
+  const wall = metal;
+  wall.albedoColor = new Color3(0.88, 0.90, 0.91);
+  wall.metallic = 0.58;
+  wall.roughness = 0.52;
+  wall.bumpTexture!.level = 0.25;
+
   const setWeather = (w: Weather) => {
-    const wet = w === 'damp';
-    // Damp stone, not a second glossy slab. One dielectric lobe reflects the
-    // actual sky, with ~2.3% normal-incidence reflectance wet vs 4% dry.
-    road.albedoColor.setAll(wet ? 0.55 : 0.89);
-    road.indexOfRefraction = wet ? 1.36 : 1.5;
-    road.roughness = wet ? 0.81 : 1;
-    road.bumpTexture!.level = wet ? 0.48 : 0.68;
-    road.detailMap.diffuseBlendLevel = wet ? 1 : 0.8;
-    road.detailMap.roughnessBlendLevel = wet ? 1 : 0;
-    kerb.roughness = wet ? 0.61 : 0.91;
-    paint.roughness = wet ? 0.52 : 0.74;
-    gravel.albedoColor = wet ? new Color3(0.65, 0.51, 0.36) : new Color3(0.96, 0.77, 0.53);
+    const wet = w === 'damp' || w === 'rain';
+    const rain = w === 'rain';
+    const ambWet = weatherBaseWetness[w];
+    roadPlugin.ambientWetness = ambWet;
+    grassPlugin.ambientWetness = ambWet * 0.75;
+    gravelPlugin.ambientWetness = ambWet * 0.85;
+    concretePlugin.ambientWetness = ambWet * 0.9;
+
+    // Preserve dry grey stone albedo; PorousSurfacePlugin handles physical Beer-Lambert pore darkening
+    road.albedoColor.setAll(0.92);
+    road.indexOfRefraction = wet ? 1.38 : 1.5;
+    road.roughness = 1;
+    road.bumpTexture!.level = rain ? 0.56 : wet ? 0.62 : 0.72;
+    kerb.roughness = rain ? 0.42 : wet ? 0.54 : 0.91;
+    paint.roughness = rain ? 0.36 : wet ? 0.48 : 0.74;
+    if (grid.syncBytes()) stateTex.update(grid.rgba);
   };
+
+  let uploadCooldown = 0;
+  const syncSurface = (dt: number) => {
+    uploadCooldown -= dt;
+    if (uploadCooldown <= 0) {
+      uploadCooldown = 0.22; // ~4.5 Hz live GPU update for drying groove & rubbering-in
+      if (grid.syncBytes()) stateTex.update(grid.rgba);
+    }
+  };
+
   setWeather('golden');
-  return { road, grass, kerb, concrete, gravel, paint, wall, setWeather };
+  return { road, grass, kerb, concrete, gravel, paint, wall, setWeather, syncSurface, grid };
 }
 
 // One mipmapped print sheet: all billboards, suites, distance boards and garage
@@ -307,19 +339,19 @@ export function signage(scene: Scene) {
   for (let j = 0; j < 4; j++) {
     const x = j * 512,
       y = 612,
-      n = ['150', '100', '50', '01'][j];
-    field('board' + n, x, y, 512, 232, cream);
+      n = ['150', '100', '50', '60'][j];
+    field('board' + n, x, y, 512, 232, j === 3 ? '#f4d35e' : cream);
     ctx.fillStyle = red;
     ctx.fillRect(x, y, 24, 232);
-    label(n, x + 45, y + 184, 195, ink, 420, true);
+    label(j === 3 ? '60 PIT' : n, x + 45, y + 184, j === 3 ? 132 : 195, ink, 435, true);
   }
   for (let i = 0; i < 16; i++) {
     const x = (i % 8) * 256,
       y = 860 + Math.floor(i / 8) * 110;
-    field('bay' + i, x, y, 256, 110, ink);
+    field('bay' + i, x, y, 256, 110, i === 0 ? '#9c2219' : ink);
     ctx.fillStyle = [red, gold, '#428b84', '#d9dfcc'][i % 4];
     ctx.fillRect(x, y, 18, 110);
-    label('BOX', x + 30, y + 38, 23, cream, 62);
+    label(i === 0 ? 'YOU' : 'BOX', x + 30, y + 38, 23, cream, 68);
     label(String(i + 1).padStart(2, '0'), x + 85, y + 85, 79, cream, 156);
   }
   field('tower', 0, 1100, 410, 880, ink);
@@ -344,13 +376,12 @@ export function signage(scene: Scene) {
   label('07 / 08', 452, 1495, 121, red, 440, true);
   label('LA  VARIANTE', 951, 1495, 110, cream, 988, true);
   field('pitexit', 420, 1560, 1570, 215, cream);
-  label('PIT  EXIT', 462, 1732, 155, ink, 910, true);
-  bars(1460, 1595, 132, red);
-  t.anisotropicFilteringLevel = 8;
+  label('PIT  ENTRY  60 KM/H', 442, 1720, 116, ink, 1050, true);
+  bars(1540, 1595, 132, red);
+  t.anisotropicFilteringLevel = 16;
   t.update(true);
   const mat = plain(scene, 'graphic panels', 0.73);
   mat.albedoTexture = t;
-  // A little self-fill preserves legibility on the shadow side of printed hoardings.
   mat.emissiveTexture = t;
   mat.emissiveColor = new Color3(0.13, 0.13, 0.13);
   return {

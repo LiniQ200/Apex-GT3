@@ -1,5 +1,15 @@
 import { raceOrder, SPRINT_LAPS } from '../physics/race';
-import { defaults, teams, type Circuit, type RaceState, type Settings, type UiActions } from '../types';
+import {
+  defaults,
+  teams,
+  type Circuit,
+  type PitStrategy,
+  type RaceState,
+  type Settings,
+  type TireCompound,
+  type UiActions,
+  type Weather,
+} from '../types';
 import { circuitGraphic, icon, insignia } from './graphics';
 import { clock, createHud } from './hud';
 import { options } from './settings';
@@ -15,8 +25,11 @@ const controls = [
   ['SPACE', 'Launch / handbrake'],
   ['E / Q', 'Shift up / down'],
   ['C / B', 'Camera / look back'],
+  ['V', 'Cycle live weather'],
+  ['P', 'Toggle Pit Strategy MFD'],
+  ['L', 'Toggle 60 km/h pit limiter'],
+  ['T / Y', 'Cycle TC / ABS (0–10)'],
   ['R', 'Reset to track'],
-  ['T / Y', 'Cycle TC / ABS'],
   ['M', 'Mute audio'],
   ['ESC', 'Pause / resume'],
 ];
@@ -27,32 +40,34 @@ export function createUI(
   actions: UiActions,
 ): { update(state: RaceState): void } {
   const graphic = circuitGraphic(circuit);
-  const offlineDownload = import.meta.env.PROD && !document.documentElement.hasAttribute('data-archive') ? '<p><a class="ax-offline-link" href="./downloads/apex-gt3.zip" download>Download the full 3D game (.zip) ↓</a></p>' : '';
-  // Use an owned child so the host's canvas or loading indicator is never replaced.
+  const offlineDownload =
+    import.meta.env.PROD && !document.documentElement.hasAttribute('data-archive')
+      ? '<p><a class="ax-offline-link" href="./downloads/apex-gt3.zip" download>Download the full 3D game (.zip) ↓</a></p>'
+      : '';
   const root = document.createElement('div');
   root.className = 'ax-ui';
   element.append(root);
   root.innerHTML = `<div class="ax-garage" data-section="garage">
     <header class="ax-mast"><div class="ax-wordmark">${insignia}<b>APEX <i>GT3</i></b></div><span class="ax-mast-slash">/</span><div class="ax-series">WEBGPU<span>SIM</span></div>
-      <div class="ax-mast-status"><i class="ax-live-dot"></i> PADDOCK READY</div><div class="ax-utility"><button data-help title="Driving controls">${icon('keys')}<span>Controls</span></button><button data-action="toggleMute" data-sound aria-label="Mute audio"></button></div></header>
+      <div class="ax-mast-status"><i class="ax-live-dot"></i> NATIVE 1080P · DIRECT PBR</div><div class="ax-utility"><button data-help title="Driving controls">${icon('keys')}<span>Controls</span></button><button data-action="toggleMute" data-sound aria-label="Mute audio"></button></div></header>
     <div class="ax-identity"><div class="ax-strap"><i></i> COMPETITION GARAGE <span>/</span> BAY 01</div><h1 data-chassis>458 GT3 EVO</h1><div class="ax-teamline"><b data-team-no>88</b><span data-team-name>Scuderia Rosso Corsa</span><em>FACTORY ENTRY</em></div></div>
     <section class="ax-config" aria-label="Garage setup"><div class="ax-config-scroll"><div class="ax-config-title"><div class="ax-strap"><i></i> RACE OPERATIONS</div><div><h2>Session setup</h2>${icon('tune')}</div></div>
-      <div class="ax-form-section"><div class="ax-section-head"><span>01</span> VEHICLE ENTRY <i></i></div><div class="ax-fields">${select('chassis', 'Chassis', true)}
+      <div class="ax-form-section"><div class="ax-section-head"><span>01</span> VEHICLE ENTRY <i></i></div><div class="ax-fields">${select('chassis', 'Chassis', true)}${select('compound', 'Starting tyre compound', true)}
       <div class="ax-livery ax-wide"><div class="ax-livery-label"><span class="ax-micro">Factory livery</span><b data-livery-code>01 / 05</b></div><div class="ax-swatches" role="group" aria-label="Factory livery">${teams.map(([num, name, base, accent], i) => `<button type="button" data-livery="${i}" title="#${num} ${name}" aria-label="${name} livery" aria-pressed="false" style="--paint:${base};--stripe:${accent}"><i></i><b>${num}</b></button>`).join('')}</div></div></div></div>
       <div class="ax-form-section"><div class="ax-section-head"><span>02</span> SESSION PARAMETERS <i></i></div><div class="ax-fields">${select('mode', 'Race format', true)}${select('weather', 'Conditions', true)}${select('pace', 'AI pace')}${select('transmission', 'Gearbox')}
-      <div class="ax-quality ax-wide"><span class="ax-micro">Graphics</span><div role="group" aria-label="Graphics quality">${options.graphics.map(([v, name]) => `<button data-quality="${v}" aria-pressed="false">${name}</button>`).join('')}</div></div></div></div></div>
+      <div class="ax-preset-badge ax-wide"><span class="ax-micro">Graphics pipeline</span><strong>NATIVE 1080P · 4× MSAA · 16× AF · ZERO BLUR</strong></div></div></div></div>
       <button class="ax-drive" data-action="start" aria-label="Drive — Start session"><b>DRIVE</b><small>START SESSION</small>${icon('arrow')}</button></section>
     <section class="ax-dossier"><div class="ax-dossier-map">${graphic.svg}</div><div class="ax-dossier-text"><div class="ax-location"><i></i> CIRCUIT DOSSIER <span>/ ITA</span></div><h2>Autodromo Valle d’Oro</h2><p>${(circuit.length / 1000).toFixed(2)} KM <b>·</b> 10 CORNERS <b>·</b> <span data-race-distance>03 LAPS</span></p></div></section>
-    <footer class="ax-footer"><div><i></i> APEX MOTORSPORT <span>/</span> SIMULATION DIVISION</div><a class="ax-credit" style="pointer-events:auto;color:inherit" href="./credits.txt" target="_blank" rel="noopener">HDRIs &amp; PBR Textures: Powered by Poly Haven (CC0) · Credits</a><b data-backend></b></footer>
+    <footer class="ax-footer"><div><i></i> APEX MOTORSPORT <span>/</span> SIMULATION DIVISION</div><a class="ax-credit" style="pointer-events:auto;color:inherit" href="./credits.txt" target="_blank" rel="noopener">HDRIs, Photogrammetry &amp; PBR: Poly Haven (CC0) · Credits</a><b data-backend></b></footer>
   </div><div class="ax-hud" data-section="hud" hidden></div>
-  <div class="ax-overlay" data-section="paused" hidden><section class="ax-modal ax-pause"><div class="ax-strap"><i></i> RACE CONTROL / PIT WALL</div><h2>Session paused</h2><div class="ax-rule"></div><div class="ax-fields">${select('transmission', 'Gearbox')}${select('graphics', 'Graphics')}</div>
+  <div class="ax-overlay" data-section="paused" hidden><section class="ax-modal ax-pause"><div class="ax-strap"><i></i> RACE CONTROL / PIT WALL</div><h2>Session paused</h2><div class="ax-rule"></div><div class="ax-fields">${select('transmission', 'Gearbox')}${select('weather', 'Live weather')}</div>
     <div class="ax-tune-rows"><button data-action="cycleTc">Traction control <b data-tc></b>${icon('angle')}</button><button data-action="cycleAbs">Anti-lock braking <b data-abs></b>${icon('angle')}</button><button data-action="toggleMute">Race audio <b data-audio></b>${icon('angle')}</button></div>
     <button class="ax-primary" data-action="resume">RESUME SESSION ${icon('arrow')}</button><div class="ax-modal-foot"><button data-action="restart">Restart race</button><button data-action="garage">Return to garage</button><button data-help>Controls</button></div></section></div>
   <div class="ax-overlay" data-section="finished" hidden><section class="ax-modal ax-finish"><div class="ax-strap"><i></i> CHEQUERED FLAG / AT YOUR FINISH</div><h2>Race classification</h2><div class="ax-finish-summary"><span>YOUR FINISH <b data-finish-place></b></span><span>BEST LAP <b data-finish-lap></b></span></div><div class="ax-result-scroll"><table><thead><tr><th>POS</th><th>DRIVER</th><th>NO.</th><th>TIME / STATUS</th></tr></thead><tbody></tbody></table></div><button class="ax-primary" data-action="restart">RACE AGAIN ${icon('arrow')}</button><div class="ax-modal-foot"><button data-action="garage">Return to garage</button></div></section></div>
   <dialog class="ax-modal ax-help"><div class="ax-help-head"><div class="ax-strap"><i></i> DRIVING MANUAL</div><button data-close aria-label="Close controls">${icon('close')}</button></div><h2>Driver controls</h2>
-    <p><b>Touchscreen:</b> Wait for lights out, then slide left or right on Steer. With your other thumb, press higher on Gas or Brake for more pedal; slide down to ease off. Lift to release. In manual, tap − or + to shift.</p>
-    <p>Tap Cam to change view. Hold Rear to look back or H-Brake for the handbrake. Reset returns you to the track; Pause opens the pit wall.</p>
-    <p><b>Gamepad:</b> Steer with the left stick. The right trigger accelerates; the left trigger brakes.</p>
+    <p><b>Pit Lane &amp; Strategy:</b> Peel right at the pit-entry board before Turn 10. The 60 km/h limiter engages automatically. Open the MoTeC Pit Strategy MFD (<kbd>P</kbd>) to choose Soft, Medium, or Wet tires, fuel, and repairs, then stop inside Bay 01 for pneumatic air-jack service.</p>
+    <p><b>Touchscreen:</b> Slide left or right on Steer; press Gas or Brake with your other thumb.</p>
+    <p><b>Gamepad:</b> Left stick steers; right trigger accelerates; left trigger brakes.</p>
     <p><b>Keyboard</b></p><dl>${controls.map(([k, v]) => `<div><dt><kbd>${k}</kbd></dt><dd>${v}</dd></div>`).join('')}</dl>${offlineDownload}<button data-close class="ax-primary">BACK ${icon('arrow')}</button></dialog>`;
 
   const sections = Object.fromEntries(
@@ -62,7 +77,6 @@ export function createUI(
     dialog = root.querySelector('dialog')!;
   const query = (selector: string) => root.querySelector<HTMLElement>(selector)!;
   const swatches = Array.from(root.querySelectorAll<HTMLButtonElement>('[data-livery]'));
-  const qualities = Array.from(root.querySelectorAll<HTMLButtonElement>('[data-quality]'));
   const selects = Array.from(root.querySelectorAll<HTMLSelectElement>('select[data-setting]'));
   const sounds = Array.from(root.querySelectorAll<HTMLButtonElement>('[data-sound]'));
   let settingsKey = '',
@@ -77,7 +91,11 @@ export function createUI(
     'cycleTc',
     'cycleAbs',
     'toggleMute',
+    'cycleWeather',
+    'togglePitLimiter',
+    'togglePitMfd',
   ] as const;
+
   root.addEventListener('click', (e) => {
     const button = (e.target as Element).closest<HTMLButtonElement>('button');
     if (!button || button.disabled) return;
@@ -89,6 +107,28 @@ export function createUI(
       dialog.close();
       return;
     }
+    if (button.dataset.weather) {
+      actions.setWeather(button.dataset.weather as Weather);
+      if (sections.hud.contains(button)) button.blur();
+      return;
+    }
+    if (button.dataset.mfdCompound) {
+      actions.updatePitStrategy({ compound: button.dataset.mfdCompound as TireCompound, changeTires: true });
+      button.blur();
+      return;
+    }
+    if (button.dataset.mfdFuel !== undefined) {
+      actions.updatePitStrategy({ refuelL: Number(button.dataset.mfdFuel) });
+      button.blur();
+      return;
+    }
+    if (button.dataset.mfdToggle) {
+      const k = button.dataset.mfdToggle as 'changeTires' | 'repair';
+      const next = button.getAttribute('aria-pressed') !== 'true';
+      actions.updatePitStrategy({ [k]: next } as Partial<PitStrategy>);
+      button.blur();
+      return;
+    }
     const action = simpleActions.find((a) => a === button.dataset.action);
     if (action) {
       actions[action]();
@@ -96,15 +136,15 @@ export function createUI(
       return;
     }
     if (button.dataset.livery !== undefined) actions.configure({ livery: Number(button.dataset.livery) });
-    else if (button.dataset.quality !== undefined)
-      actions.configure({ graphics: button.dataset.quality as Settings['graphics'] });
   });
+
   root.addEventListener('change', (e) => {
     const select = e.target as HTMLSelectElement,
       key = select.dataset.setting as keyof typeof options;
     if (!Object.hasOwn(options, key) || !options[key].some(([value]) => value === select.value)) return;
     actions.configure({ [key]: select.value });
   });
+
   dialog.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       e.stopPropagation();
@@ -112,6 +152,7 @@ export function createUI(
       dialog.close();
     }
   });
+
   function syncSettings(settings: Settings) {
     const key = Object.values(settings).join('|');
     if (key === settingsKey) return;
@@ -123,8 +164,6 @@ export function createUI(
     }
     for (const b of swatches)
       b.setAttribute('aria-pressed', String(Number(b.dataset.livery) === settings.livery));
-    for (const b of qualities)
-      b.setAttribute('aria-pressed', String(b.dataset.quality === settings.graphics));
     const team = teams[settings.livery] || teams[0];
     query('[data-team-no]').textContent = team[0];
     query('[data-team-name]').textContent = team[1];
@@ -132,8 +171,10 @@ export function createUI(
     query('[data-livery-code]').textContent = `0${settings.livery + 1} / 05`;
     query('[data-race-distance]').textContent = settings.mode === 'sprint' ? '03 LAPS' : 'HOTLAP';
   }
+
   function classification(s: RaceState) {
-    const drivers = raceOrder(s.drivers), winnerTime = drivers[0].finishTime;
+    const drivers = raceOrder(s.drivers),
+      winnerTime = drivers[0].finishTime;
     const body = root.querySelector('tbody')!;
     body.replaceChildren();
     drivers.forEach((d, i) => {
@@ -151,6 +192,7 @@ export function createUI(
     query('[data-finish-place]').textContent = `P${drivers.findIndex((d) => d.id === 0) + 1}`;
     query('[data-finish-lap]').textContent = s.bestLap > 0 ? clock(s.bestLap) : '–:––.–––';
   }
+
   syncSettings(defaults);
   return {
     update(s) {
@@ -175,8 +217,8 @@ export function createUI(
           soundState = s.muted;
         }
         if (s.phase === 'paused') {
-          query('[data-tc]').textContent = `${s.tc} / 5`;
-          query('[data-abs]').textContent = `${s.abs} / 3`;
+          query('[data-tc]').textContent = `${s.tc} / 10`;
+          query('[data-abs]').textContent = `${s.abs} / 10`;
           query('[data-audio]').textContent = s.muted ? 'MUTED' : 'LIVE';
         } else {
           const b = query('[data-backend]');

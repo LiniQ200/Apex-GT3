@@ -1,6 +1,7 @@
 import type { AudioRig, RaceState } from '../types';
 import { Graph } from './graph';
 import { opponents } from './opponents';
+import { pitPneumatics } from './pit';
 import { powertrain } from './powertrain';
 import { road } from './road';
 
@@ -16,7 +17,8 @@ function mixer(g: Graph) {
   const mix = g.filter(limiter, 'highpass', 28, 0.5);
   const motor = powertrain(g, mix),
     tires = road(g, mix),
-    rivals = opponents(g, mix);
+    rivals = opponents(g, mix),
+    pit = pitPneumatics(g, mix);
   let playing = false;
   return (s: RaceState) => {
     const now = g.ctx.currentTime;
@@ -32,8 +34,9 @@ function mixer(g: Graph) {
     if (!active || !p) return;
     const cockpit = s.camera === 'cockpit';
     motor(p, s.settings.chassis, cockpit, now, fresh);
-    tires(p, cockpit, s.settings.weather === 'damp', now);
+    tires(p, cockpit, s.trackWetness, now);
     rivals(s.drivers, p, cockpit, now);
+    pit(s.pitEvent, now);
   };
 }
 

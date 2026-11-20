@@ -1,12 +1,13 @@
 import { GraphicsUnavailable } from './engine/view';
 import { createCircuit } from './track/circuit';
+import { TrackSurfaceGrid, weatherBaseWetness, weatherSurfaceTempC } from './track/surfaceState';
 import { createAudio } from './audio';
 import { createUI } from './ui';
 import { rememberSetup, restoreSetup } from './ui/settings';
 import { createWorld, STEP } from './physics/world';
 import { createRace, createRaceState, driver } from './physics/race';
 import { controls } from './controls';
-import type { Settings, UiActions, CameraMode, Weather } from './types';
+import type { Settings, UiActions, CameraMode, Weather, PitStrategy } from './types';
 
 const progress = (s: string) => {
   const e = document.getElementById('progress');
@@ -47,7 +48,9 @@ async function boot() {
   alternate.href = launch.href;
   progress('Loading the 3D engine');
   const studio = import('./engine/studioView');
-  const circuit = createCircuit(), { createStudioView } = await studio;
+  const circuit = createCircuit(),
+    surfaceGrid = new TrackSurfaceGrid(circuit),
+    { createStudioView } = await studio;
   progress(compatibility ? 'Starting WebGL 2' : 'Connecting to the graphics device');
   let view = await createStudioView(document.querySelector('#scene')!, circuit, compatibility ? 'WebGL2 launch' : '');
   onDispose(() => view.dispose());
@@ -123,13 +126,14 @@ async function boot() {
     const { makeRoad } = await import('./track/road');
     if (token !== ticket) return;
     const road = makeRoad(circuit);
+    surfaceGrid.setWeather(s.settings.weather);
     const [created] = await Promise.all([
-      createWorld(circuit, road.colliders).then(w => { onDispose(w.dispose); return w; }),
-      view.prepareTrack(road, s.settings.weather),
+      createWorld(circuit, road.colliders, surfaceGrid).then(w => { onDispose(w.dispose); return w; }),
+      view.prepareTrack(road, s.settings.weather, surfaceGrid),
     ]);
     if (token !== ticket) return;
     world = created;
-    return race = createRace(circuit, world, s);
+    return race = createRace(circuit, world, s, surfaceGrid);
   }
   async function start(skip = false) {
     if (busy) return;
@@ -140,11 +144,22 @@ async function boot() {
     session.start(skip, wheels);
     await present(token);
   }
+  const weatherOrder: Weather[] = ['clear', 'golden', 'damp', 'rain'];
+  function applyWeather(w: Weather) {
+    if (lifetime.signal.aborted) return;
+    s.settings.weather = w;
+    surfaceGrid.setWeather(w);
+    s.surfaceTempC = weatherSurfaceTempC[w];
+    s.trackWetness = surfaceGrid.getMeanWetness() || weatherBaseWetness[w];
+    rememberSetup({ weather: w });
+    void view.setWeather(w).then(checkChange).catch(failure);
+    ui.update(s);
+  }
   function configure(p: Partial<Settings>) {
     if (lifetime.signal.aborted) return;
     const old = { ...s.settings };
     Object.assign(s.settings, p);
-    if (old.weather !== s.settings.weather) void view.setWeather(s.settings.weather).then(checkChange).catch(failure);
+    if (old.weather !== s.settings.weather) applyWeather(s.settings.weather);
     if (old.graphics !== s.settings.graphics) { view.quality(s.settings.graphics); checkChange(); }
     if (s.phase === 'garage' && (old.chassis !== s.settings.chassis || old.livery !== s.settings.livery)) void garage().catch(failure);
     ui.update(s);
@@ -179,14 +194,33 @@ async function boot() {
       void garage().catch(failure);
     },
     cycleTc() {
-      s.tc = (s.tc + 1) % 6;
+      s.tc = (s.tc + 1) % 11;
     },
     cycleAbs() {
-      s.abs = (s.abs + 1) % 4;
+      s.abs = (s.abs + 1) % 11;
     },
     toggleMute() {
       audio.unlock();
       s.muted = !s.muted;
+    },
+    setWeather(w: Weather) {
+      if (weatherOrder.includes(w)) applyWeather(w);
+    },
+    cycleWeather() {
+      const next = weatherOrder[(weatherOrder.indexOf(s.settings.weather) + 1) % weatherOrder.length];
+      applyWeather(next);
+    },
+    togglePitLimiter() {
+      const p = s.drivers[0];
+      if (p && (s.phase === 'race' || s.phase === 'lights') && p.pitState === 'track') {
+        p.pitLimiter = !p.pitLimiter;
+      }
+    },
+    togglePitMfd() {
+      if (s.phase === 'race' || s.phase === 'lights') s.pitMfdOpen = !s.pitMfdOpen;
+    },
+    updatePitStrategy(patch: Partial<PitStrategy>) {
+      Object.assign(s.pitStrategy, patch);
     },
   };
   const ui = createUI(uiRoot, circuit, actions),
@@ -210,6 +244,9 @@ async function boot() {
       if (code === 'KeyC') { s.camera = modes[(modes.indexOf(s.camera) + 1) % 4]; checkChange(); }
       if (code === 'KeyT') actions.cycleTc();
       if (code === 'KeyY') actions.cycleAbs();
+      if (code === 'KeyL') actions.togglePitLimiter();
+      if (code === 'KeyP') actions.togglePitMfd();
+      if (code === 'KeyV') actions.cycleWeather();
       if (code === 'KeyR') race?.resetPlayer();
       if ((code === 'KeyQ' || code === 'KeyE') && s.settings.transmission === 'manual')
         world?.shift(s.drivers[0], code === 'KeyQ' ? -1 : 1);
@@ -237,7 +274,7 @@ async function boot() {
     if (world) {
       const { makeRoad } = await import('./track/road');
       if (token !== ticket) return;
-      await view.prepareTrack(makeRoad(circuit), s.settings.weather);
+      await view.prepareTrack(makeRoad(circuit), s.settings.weather, surfaceGrid);
     }
     await view.setWeather(s.settings.weather);
     if (token !== ticket) return;
@@ -297,10 +334,14 @@ async function boot() {
       if (modes.includes(mode) && s.camera !== mode) { s.camera = mode; checkChange(); }
     },
     setWeather: (w: Weather) => {
-      if (w === 'golden' || w === 'damp') configure({ weather: w });
+      if (weatherOrder.includes(w)) applyWeather(w);
     },
+    togglePitLimiter: () => actions.togglePitLimiter(),
+    togglePitMfd: () => actions.togglePitMfd(),
+    updatePitStrategy: (patch: Partial<PitStrategy>) => actions.updatePitStrategy(patch),
     ...(qa
       ? {
+          enterPitLane: () => race?.teleportToPitEntry() ?? false,
           freeze: (on: boolean) => {
             frozen = on;
             acc = 0;

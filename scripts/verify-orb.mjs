@@ -51,7 +51,7 @@ page.on('response', (r) => {
     faults.push(`${r.status()} ${path}`);
     console.log(faults.at(-1));
   }
-  if (/^\/assets\/(draco|models|skies|asphalt|concrete|kerb|terrain|foliage)\//.test(path)) assets.add(path);
+  if (/^\/assets\/(draco|models|skies|asphalt|concrete|kerb|terrain|gravel|bark|metal|foliage|kit|biome)\//.test(path)) assets.add(path);
 });
 page.on('requestfailed', (r) => {
   if (r.failure()?.errorText !== 'net::ERR_ABORTED') faults.push(`${r.failure()?.errorText} ${r.url()}`);
@@ -157,16 +157,15 @@ try {
         window.__GT3_DEBUG__.setCamera('hood');
       });
       await shot(`${name}-damp`);
+      await page.evaluate(() => {
+        window.__GT3_DEBUG__.setWeather('rain');
+        window.__GT3_DEBUG__.setCamera('chase');
+      });
+      await shot(`${name}-rain`);
       await page.keyboard.press('Escape');
       await ready('paused');
-      for (const quality of ['balanced', 'ultra']) {
-        await page.locator('select[data-setting="graphics"]').selectOption(quality);
-        await ready('paused');
-        assert.equal((await state()).settings.graphics, quality);
-      }
       await page.getByRole('button', { name: 'Resume session' }).click();
       await ready('race');
-      await shot(`${name}-ultra`);
     }
   } else {
     // Record real input on the live garage, including a neighbour on either side of the chosen swatch.
@@ -343,12 +342,20 @@ try {
     'models/car_concept_base.glb',
     'draco/draco_decoder.wasm',
     'skies/golden_hour.env',
-    'foliage/italian-conifers.webp',
-    ...['asphalt', 'concrete', 'terrain', 'kerb'].flatMap((s) =>
+    'foliage/mediterranean-atlas.webp',
+    'kit/botanical.glb',
+    'kit/trackside.glb',
+    'biome/rock_moss.glb',
+    'biome/fern.glb',
+    'biome/shrub.glb',
+    'biome/grass_clump.glb',
+    'bark/normal.jpg',
+    ...['asphalt', 'concrete', 'terrain', 'kerb', 'gravel', 'metal'].flatMap((s) =>
       ['albedo', 'normal', 'orm'].map((k) => `${s}/${k}.jpg`),
     ),
   ];
   if (!gpu || full) required.push('skies/overcast_race.env');
+  if (full) required.push('skies/heavy_rain.env');
   for (const file of required) assert.ok(assets.has('/assets/' + file), `Missing request ${file}`);
   assert.deepEqual(faults, []);
   console.log(

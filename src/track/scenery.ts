@@ -1,28 +1,37 @@
 import type { Scene } from '@babylonjs/core/scene';
+import { LoadAssetContainerAsync } from '@babylonjs/core/Loading/sceneLoader';
 import type { Material } from '@babylonjs/core/Materials/material';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
 import { SubMesh } from '@babylonjs/core/Meshes/subMesh';
 import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData';
-import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
-import { CreateCylinder } from '@babylonjs/core/Meshes/Builders/cylinderBuilder';
-import { CreatePlane } from '@babylonjs/core/Meshes/Builders/planeBuilder';
 import '@babylonjs/core/Meshes/thinInstanceMesh';
 import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
-import type { Circuit } from '../types';
-import { sprintGrid, wallOffset, trapSide } from './circuit';
-import { geometry, vertex, quad, point, type Geometry, type Vec } from './road';
+import type { Circuit, Weather } from '../types';
+import {
+  PIT_BOX_D,
+  PIT_WALL_D,
+  PIT_WALL_END_S,
+  PIT_WALL_START_BACK,
+  pitBoxStation,
+  sprintGrid,
+  trapSide,
+  wallOffset,
+} from './circuit';
+import { geometry, vertex, quad, point, type Geometry as RawGeom, type Vec } from './road';
 import { plain, signage, randomSource, type roadMaterials } from './materials';
-import { grove } from './foliage';
+import { bakeGltfVertexData, createBotanicalForest, type Species } from './foliage';
 
-function meshData(g: Geometry) {
+const assetUrl = (rel: string) =>
+  new URL(`${import.meta.env.BASE_URL}assets/${rel}`, window.location.href).href;
+
+function meshData(g: RawGeom) {
   const vd = new VertexData();
   vd.positions = g.positions;
   vd.indices = g.indices.slice();
-  // Babylon builders author clockwise faces; never change the source Jolt indices.
   for (let i = 0; i < vd.indices.length; i += 3) {
     const t = vd.indices[i + 1];
     vd.indices[i + 1] = vd.indices[i + 2];
@@ -35,11 +44,9 @@ function meshData(g: Geometry) {
   return vd;
 }
 
-export function publish(scene: Scene, name: string, g: Geometry, mat: Material, casts = false, sectorMetres = 0) {
+export function publish(scene: Scene, name: string, g: RawGeom, mat: Material, casts = false, sectorMetres = 0) {
   const first = new Mesh(name, scene);
   meshData(g).applyToMesh(first);
-  // Shadow render lists cull *meshes*, not just submeshes. Give separated
-  // sections their own bounds but share a single set of GPU buffers/normals.
   for (let start = 0, sector = 0; start < g.indices.length; sector++) {
     let end = g.indices.length;
     if (sectorMetres) {
@@ -69,11 +76,7 @@ export function publish(scene: Scene, name: string, g: Geometry, mat: Material, 
   return first;
 }
 
-// A single rigid 2 m kerbstone cannot exactly follow both verges in a tight bend.
-// Instance its bevel faces instead: each affine basis sends the unit facet to the
-// three ACTUAL collider vertices. This preserves the tapered plan and the tooth
-// profile and avoids gaps/overlaps from rotating thousands of rectangular blocks.
-export function publishKerbs(scene: Scene, g: Geometry, mat: Material) {
+export function publishKerbs(scene: Scene, g: RawGeom, mat: Material) {
   const groups = new Map<number, { matrices: number[]; colors: number[] }>(),
     p = g.positions;
   for (let i = 0; i < g.indices.length; i += 3) {
@@ -98,22 +101,10 @@ export function publishKerbs(scene: Scene, g: Geometry, mat: Material) {
       groups.set(key, group);
     }
     group.matrices.push(
-      x0,
-      x1,
-      x2,
-      0,
-      n0 / len,
-      n1 / len,
-      n2 / len,
-      0,
-      z0,
-      z1,
-      z2,
-      0,
-      p[a],
-      p[a + 1],
-      p[a + 2],
-      1,
+      x0, x1, x2, 0,
+      n0 / len, n1 / len, n2 / len, 0,
+      z0, z1, z2, 0,
+      p[a], p[a + 1], p[a + 2], 1,
     );
     group.colors.push(g.colors[ai * 4], g.colors[ai * 4 + 1], g.colors[ai * 4 + 2], 1);
   }
@@ -135,7 +126,9 @@ export function publishKerbs(scene: Scene, g: Geometry, mat: Material) {
   }
 }
 
-const hillsX = -1340, hillsZ = -1460, hillStep = 43;
+const hillsX = -1340,
+  hillsZ = -1460,
+  hillStep = 43;
 function hillSample(x: number, z: number) {
   const edge = Math.max(0, Math.abs(x - 620) - 729, Math.abs(z - 160) - 605);
   const gain = 1 - Math.exp((-edge * edge) / 55000);
@@ -147,13 +140,14 @@ function hillSample(x: number, z: number) {
     5 * Math.sin(x * 0.032 + z * 0.019);
   return -2.36 + gain * wide;
 }
-// Props stand on the rendered triangles, not the analytic surface between
-// survey samples (the two can differ by metres on the distant ridgeline).
 function floor(x: number, z: number) {
   const x0 = hillsX + Math.floor((x - hillsX) / hillStep) * hillStep;
   const z0 = hillsZ + Math.floor((z - hillsZ) / hillStep) * hillStep;
-  const u = (x - x0) / hillStep, v = (z - z0) / hillStep;
-  const diagonal = (1 - Math.max(u, v)) * hillSample(x0, z0) + Math.min(u, v) * hillSample(x0 + hillStep, z0 + hillStep);
+  const u = (x - x0) / hillStep,
+    v = (z - z0) / hillStep;
+  const diagonal =
+    (1 - Math.max(u, v)) * hillSample(x0, z0) +
+    Math.min(u, v) * hillSample(x0 + hillStep, z0 + hillStep);
   return diagonal + (u > v ? (u - v) * hillSample(x0 + hillStep, z0) : (v - u) * hillSample(x0, z0 + hillStep));
 }
 function hills(scene: Scene, grass: PBRMaterial) {
@@ -168,8 +162,6 @@ function hills(scene: Scene, grass: PBRMaterial) {
         tone = 0.62 + 0.1 * Math.cos(z * 0.013 + x * 0.019) + 0.04 * Math.sin(z * 0.038 - x * 0.022);
       vertex(g, [x, y, z], [x / 17, z / 17], [tone * 1.12, tone, tone * 0.87]);
     }
-  // Same grid and shared normals, but four compact patches instead of one
-  // 4 km bounding box. Don't pay for kerbside normal/ORM detail on the horizon.
   for (let z = 0; z < h - 1; z += 41)
     for (let x = 0; x < w - 1; x += 46)
       for (let j = z + 1; j <= z + 41; j++)
@@ -183,68 +175,6 @@ function hills(scene: Scene, grass: PBRMaterial) {
   publish(scene, 'terrain.rolling Apennine foothills', g, mat).subdivide(4);
 }
 
-// Spatial batches keep off-camera architecture out of the main and shadow passes.
-function batches(scene: Scene, base: Material, glass: Material, crowd: Material) {
-  type Group = { matrix: number[]; color: number[]; kind: string };
-  const groups = new Map<string, Group>();
-  const palette = new Map<string, Color3>();
-  function place(kind: string, pos: Vec, size: Vec, color: string, yaw = 0, pitch = 0, roll = 0) {
-    // Low-poly, sparse poles and terrace cards don't merit a draw per tiny
-    // cluster. Keep the dense architecture in tighter cells.
-    const cell = kind === 'mast' || kind === 'crowd' ? 850 : 340;
-    const region = Math.floor((pos[0] + 160) / cell) + ':' + Math.floor((pos[2] + 100) / cell),
-      key = kind + '@' + region;
-    let group = groups.get(key);
-    if (!group) {
-      group = { matrix: [], color: [], kind };
-      groups.set(key, group);
-    }
-    const m = Matrix.Compose(
-      Vector3.FromArray(size),
-      Quaternion.RotationYawPitchRoll(yaw, pitch, roll),
-      Vector3.FromArray(pos),
-    );
-    group.matrix.push(...m.m);
-    let c = palette.get(color);
-    if (!c) {
-      c = Color3.FromHexString(color).toLinearSpace();
-      palette.set(color, c);
-    }
-    group.color.push(c.r, c.g, c.b, 1);
-  }
-  function rod(a: Vec, b: Vec, r: number, color: string, kind = 'box') {
-    const dx = b[0] - a[0],
-      dy = b[1] - a[1],
-      dz = b[2] - a[2];
-    place(
-      kind,
-      [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2],
-      [r, r, Math.hypot(dx, dy, dz)],
-      color,
-      Math.atan2(dx, dz),
-      -Math.atan2(dy, Math.hypot(dx, dz)),
-    );
-  }
-  function finish() {
-    for (const [key, g] of groups) {
-      const name = 'venue.' + key;
-      let m: Mesh;
-      if (g.kind === 'crowd') m = CreatePlane(name, { size: 1 }, scene);
-      else if (g.kind === 'mast')
-        m = CreateCylinder(name, { height: 1, diameterTop: 0.76, diameterBottom: 1, tessellation: 8 }, scene);
-      else m = CreateBox(name, { size: 1 }, scene);
-      m.material = g.kind === 'glass' ? glass : g.kind === 'crowd' ? crowd : base;
-      m.isPickable = false;
-      m.receiveShadows = true;
-      m.thinInstanceSetBuffer('matrix', Float32Array.from(g.matrix), 16, true);
-      m.thinInstanceSetBuffer('color', Float32Array.from(g.color), 4, true);
-      m.metadata = { trackShadowCaster: g.kind !== 'crowd', shadowCaster: g.kind !== 'crowd' };
-      m.freezeWorldMatrix();
-    }
-  }
-  return { place, rod, finish };
-}
-
 function spectators(scene: Scene) {
   const t = new DynamicTexture(
       'terrace spectators',
@@ -255,17 +185,7 @@ function spectators(scene: Scene) {
     ),
     c = t.getContext() as CanvasRenderingContext2D;
   const r = randomSource(51),
-    shirts = [
-      '#b13c30',
-      '#24495a',
-      '#b6aa87',
-      '#3f5253',
-      '#ce9a38',
-      '#403c46',
-      '#4e6556',
-      '#eee1c9',
-      '#706857',
-    ],
+    shirts = ['#b13c30', '#24495a', '#b6aa87', '#3f5253', '#ce9a38', '#403c46', '#4e6556', '#eee1c9', '#706857'],
     skin = ['#cc9d78', '#8d634b', '#c49779', '#b08a6a'];
   const ell = (x: number, y: number, rx: number, ry: number, col: string) => {
     c.fillStyle = col;
@@ -283,17 +203,9 @@ function spectators(scene: Scene) {
     ell(x, h + 48, 12 + r() * 2, 24, col);
     ell(x, h + 21, 8, 11, face);
     ell(x, h + 12, 8, 4, r() < 0.28 ? col : '#413730');
-    if (r() < 0.7) {
-      c.strokeStyle = face;
-      c.lineWidth = 3;
-      c.beginPath();
-      c.moveTo(x - 9, h + 43);
-      c.lineTo(x - 11, h + 60);
-      c.lineTo(x - 3, h + 64);
-      c.stroke();
-    }
   }
   t.hasAlpha = true;
+  t.anisotropicFilteringLevel = 16;
   t.update(true);
   const m = plain(scene, 'terraces', 0.99);
   m.albedoTexture = t;
@@ -303,41 +215,119 @@ function spectators(scene: Scene) {
   return m;
 }
 
-export function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof roadMaterials>) {
+/**
+ * Load the Blender 4.3 studio-beveled FIA Grade-1 modular trackside kit
+ * (`assets/kit/trackside.glb`) — zero primitive CreateBox/CreateCylinder stacking!
+ */
+async function loadTracksideKit(scene: Scene, mats: ReturnType<typeof roadMaterials>) {
+  const res = await fetch(assetUrl('kit/trackside.glb'));
+  if (!res.ok) throw Error(`Failed to load kit/trackside.glb: HTTP ${res.status}`);
+  const container = await LoadAssetContainerAsync(new Uint8Array(await res.arrayBuffer()), scene, {
+    name: 'trackside.glb',
+    pluginExtension: '.glb',
+    pluginOptions: { gltf: { skipMaterials: true, createInstances: false } },
+  });
+  const geoms = new Map<string, VertexData>();
+  for (const m of container.meshes) {
+    if (m instanceof Mesh && m.geometry) {
+      const clean = m.name.replace(/_primitive\d+$/, '');
+      geoms.set(clean, bakeGltfVertexData(m));
+    }
+  }
+  container.dispose();
+
+  // Assign calibrated scanned PBR materials to each architectural class
+  const steelMat = mats.wall;
+  const ironMat = plain(scene, 'kit.structuralIron', 0.44, 0.56);
+  ironMat.albedoColor = Color3.FromHexString('#293237').toLinearSpace();
+  ironMat.bumpTexture = mats.wall.bumpTexture;
+  const concreteMat = mats.concrete;
+  const rubberMat = plain(scene, 'kit.tireWallRubber', 0.84, 0.02);
+  rubberMat.albedoColor = Color3.FromHexString('#1e2022').toLinearSpace();
+  const tecproRedMat = plain(scene, 'kit.tecproRed', 0.46, 0.04);
+  tecproRedMat.albedoColor = Color3.FromHexString('#c4231b').toLinearSpace();
+  const tecproWhiteMat = plain(scene, 'kit.tecproWhite', 0.52, 0.02);
+  tecproWhiteMat.albedoColor = Color3.FromHexString('#e5e3d8').toLinearSpace();
+  const accentMat = plain(scene, 'kit.pitBoxPortal', 0.36, 0.25);
+  accentMat.albedoColor = Color3.FromHexString('#dc3926').toLinearSpace();
+  accentMat.emissiveColor = new Color3(0.28, 0.06, 0.02);
+  const villaMat = plain(scene, 'kit.tuscanStucco', 0.86, 0.0);
+  villaMat.albedoColor = Color3.FromHexString('#c8b693').toLinearSpace();
+  villaMat.bumpTexture = mats.concrete.bumpTexture;
+  const terraMat = plain(scene, 'kit.terracotta', 0.78, 0.0);
+  terraMat.albedoColor = Color3.FromHexString('#9c563a').toLinearSpace();
+
+  const matMap: Record<string, Material> = {
+    ArmcoPost: steelMat,
+    TecproRed: tecproRedMat,
+    TecproWhite: tecproWhiteMat,
+    TireStack: rubberMat,
+    CatchFencePost: steelMat,
+    MarshalPost: concreteMat,
+    BrakeBoardFrame: ironMat,
+    GrandstandBay: concreteMat,
+    StartGantry: ironMat,
+    PitGarageBay: concreteMat,
+    PitWallStand: ironMat,
+    PitBoxPortal: accentMat,
+    FloodlightTower: steelMat,
+    TuscanVilla: villaMat,
+    TuscanCampanile: terraMat,
+  };
+
+  type KitCell = { part: string; matrices: number[] };
+  const cells = new Map<string, KitCell>();
+
+  function placeKit(part: string, pos: Vec, yaw = 0, scale: Vec = [1, 1, 1], pitch = 0, roll = 0) {
+    if (!geoms.has(part)) return;
+    const cellSz = part === 'ArmcoPost' || part === 'CatchFencePost' || part === 'TireStack' ? 280 : 420;
+    const key = `${part}@${Math.floor((pos[0] + 160) / cellSz)}:${Math.floor((pos[2] + 100) / cellSz)}`;
+    let cell = cells.get(key);
+    if (!cell) {
+      cell = { part, matrices: [] };
+      cells.set(key, cell);
+    }
+    const m = Matrix.Compose(
+      Vector3.FromArray(scale),
+      Quaternion.RotationYawPitchRoll(yaw, pitch, roll),
+      Vector3.FromArray(pos),
+    );
+    cell.matrices.push(...m.m);
+  }
+
+  function finishKit() {
+    for (const [key, cell] of cells) {
+      const g = geoms.get(cell.part);
+      if (!g) continue;
+      const mesh = new Mesh('venue.kit.' + key, scene);
+      g.applyToMesh(mesh);
+      mesh.material = matMap[cell.part] ?? concreteMat;
+      mesh.cullingStrategy = Mesh.CULLINGSTRATEGY_OPTIMISTIC_INCLUSION;
+      mesh.isPickable = false;
+      mesh.receiveShadows = true;
+      mesh.thinInstanceSetBuffer('matrix', Float32Array.from(cell.matrices), 16, true);
+      const casts = cell.part !== 'ArmcoPost' && cell.part !== 'CatchFencePost';
+      mesh.metadata = { trackShadowCaster: casts, shadowCaster: casts };
+      mesh.freezeWorldMatrix();
+    }
+  }
+
+  return { placeKit, finishKit };
+}
+
+export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof roadMaterials>) {
   hills(scene, mats.grass);
+  const [kit, forest] = await Promise.all([loadTracksideKit(scene, mats), createBotanicalForest(scene)]);
+
   const atlas = signage(scene),
     signs = geometry(),
-    cloth = geometry(),
-    fence = geometry();
-  const base = plain(scene, 'painted architecture', 0.72, 0.09),
-    glass = plain(scene, 'smoked glazing', 0.2, 0.42),
-    people = spectators(scene);
-  const { place, rod, finish } = batches(scene, base, glass, people),
-    rnd = randomSource(270889);
-  const steel = '#687473',
-    iron = '#334144',
-    charcoal = '#243034',
-    chalk = '#dbd8cc',
-    slate = '#455359',
-    scarlet = '#dd392d',
-    brass = '#efae42';
-  function box(
-    x: number,
-    y: number,
-    z: number,
-    w: number,
-    h: number,
-    dep: number,
-    color: string,
-    yaw = 0,
-    pitch = 0,
-    roll = 0,
-    kind = 'box',
-  ) {
-    place(kind, [x, y, z], [w, h, dep], color, yaw, pitch, roll);
-  }
-  // A panel's yaw is that of a Babylon plane: at yaw=0 its front faces a grid
-  // approaching in +Z. Every inscription has explicit orientation and atlas UVs.
+    crowdGeom = geometry(),
+    gridPaint = geometry(),
+    fence = geometry(),
+    flagPanels = geometry();
+  const peopleMat = spectators(scene);
+  const rnd = randomSource(270889);
+
   function panel(id: string, v: Vec, width: number, height: number, yaw: number) {
     const [u0, v0, u1, v1] = atlas.uv(id),
       w = width / 2,
@@ -352,227 +342,227 @@ export function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof r
       vertex(signs, [v[0] + x * Math.cos(yaw), v[1] + y, v[2] - x * Math.sin(yaw)], [u, vt]);
     quad(signs, b, b + 3, b + 2, b + 1);
   }
-  function flag(x: number, y: number, z: number, height: number) {
-    box(x, y + height / 2, z, 0.1, height, 0.1, steel, 0, 0, 0, 'mast');
-    const colors: Vec[] = [
-      [0.025, 0.35, 0.17],
-      [0.91, 0.89, 0.78],
-      [0.69, 0.039, 0.029],
-    ];
-    for (let j = 0; j < 12; j++) {
-      const start = cloth.positions.length / 3;
-      for (const [u, v] of [
-        [j / 12, 0],
-        [j / 12, 1],
-        [(j + 1) / 12, 1],
-        [(j + 1) / 12, 0],
-      ]) {
-        vertex(
-          cloth,
-          [
-            x + u * 2.07,
-            y + height - 0.18 - v * 1.08 - u * 0.21 + 0.06 * Math.sin(u * 8),
-            z + u * 0.65 + 0.23 * Math.sin(u * 8 + z * 0.1),
-          ],
-          [u, v],
-          colors[Math.floor(j / 4)],
-        );
-      }
-      quad(cloth, start, start + 1, start + 2, start + 3);
-    }
+
+  function addPaintQuad(s: number, d: number, ww: number, len: number, col: Vec, h = 0.017) {
+    const p0 = c.at(s - len * 0.5), p1 = c.at(s + len * 0.5);
+    const a = vertex(gridPaint, point(p0, d - ww * 0.5, h), [0, 0], col);
+    const b = vertex(gridPaint, point(p1, d - ww * 0.5, h), [0, 1], col);
+    const cc = vertex(gridPaint, point(p1, d + ww * 0.5, h), [1, 1], col);
+    const dd = vertex(gridPaint, point(p0, d + ww * 0.5, h), [1, 0], col);
+    quad(gridPaint, a, b, cc, dd);
   }
-  function strip(s: number, d: number, ww: number, len: number, col: string, h = 0.018) {
-    const p = c.at(s, d);
-    box(p.x, p.y + h, p.z, ww, 0.012, len, col, p.yaw, -p.slope, p.bank);
-  }
-  // Ten staggered two-sided start boxes, yellow timing dashes, chessboard and line.
+
+  // Starting grid boxes & checkered timing line (flat road-hugging decals, zero boxes)
+  const chalk: Vec = [0.89, 0.88, 0.82],
+    brass: Vec = [0.95, 0.72, 0.25];
   for (const { s, d } of sprintGrid) {
-    strip(s + 2.56, d, 2.68, 0.14, chalk);
-    for (const dx of [-1.29, 1.29]) strip(s + 1.75, d + dx, 0.1, 1.63, chalk);
-    strip(s + 2.73, d, 1.14, 0.12, brass);
+    addPaintQuad(s + 2.56, d, 2.68, 0.14, chalk);
+    for (const dx of [-1.29, 1.29]) addPaintQuad(s + 1.75, d + dx, 0.1, 1.63, chalk);
+    addPaintQuad(s + 2.73, d, 1.14, 0.12, brass);
   }
-  // Timing uses the survey seam; the start-light gantry is further up the grid.
-  strip(0, 0, 15.7, 0.21, chalk);
+  addPaintQuad(0, 0, 15.7, 0.21, chalk);
   for (let j = 0; j < 2; j++)
     for (let i = 0; i < 32; i++)
-      strip(0.47 + j * 0.43, -7.75 + i * 0.5, 0.5, 0.44, (i + j) % 2 ? '#e9e8dc' : '#303436');
-
-  // Main tribuna. The underside of the projecting canopy, roof lattice, terrace
-  // risers, aisle breaks and spectators each read at a different chase-camera range.
-  for (let seg = 0; seg < 9; seg++) {
-    const z = -56 + seg * 25.4;
-    for (let i = 0; i < 10; i++) {
-      const x = -19.5 - i * 1.15,
-        y = 0.85 + i * 0.53;
-      box(x, y - 0.28, z, 1.23, 0.56, 24.9, i % 3 === 0 ? '#929389' : '#aaaba0');
-      box(x - 0.12, y + 0.12, z, 0.64, 0.21, 22.9, seg % 3 === 0 ? '#9d392f' : '#576269');
-      place(
-        'crowd',
-        [x - 0.09, y + 0.72, z + (i % 2 ? 0.4 : -0.25)],
-        [22.25, 1.38, 1],
-        i % 3 === 0 ? '#ebe3d4' : '#ffffff',
-        -Math.PI / 2,
+      addPaintQuad(
+        0.47 + j * 0.43,
+        -7.75 + i * 0.5,
+        0.5,
+        0.44,
+        (i + j) % 2 ? [0.91, 0.91, 0.86] : [0.18, 0.2, 0.22],
       );
+
+  // Main Grandstands (Blender space-frame cantilevered bays + terraced spectators)
+  for (let seg = 0; seg < 8; seg++) {
+    const z = -42 + seg * 25.5;
+    kit.placeKit('GrandstandBay', [-19.5, 0, z], 0);
+    for (let tier = 0; tier < 10; tier++) {
+      const x = -19.6 - tier * 1.15,
+        y = 1.48 + tier * 0.53;
+      const b = crowdGeom.positions.length / 3;
+      const hw = 10.6,
+        hh = 0.68;
+      vertex(crowdGeom, [x, y - hh, z - hw], [0, 0]);
+      vertex(crowdGeom, [x, y - hh, z + hw], [1, 0]);
+      vertex(crowdGeom, [x, y + hh, z + hw], [1, 1]);
+      vertex(crowdGeom, [x, y + hh, z - hw], [0, 1]);
+      quad(crowdGeom, b, b + 1, b + 2, b + 3);
     }
-    box(-26.2, 9.15, z, 18.3, 0.42, 25.22, '#d5d5c7', 0, 0, 0.059);
-    box(-17.15, 9.59, z, 0.2, 0.62, 25.3, '#626a69');
-    box(-34.5, 8.64, z, 0.25, 0.63, 25.3, scarlet);
-    for (const dz of [-10.3, 10.3]) {
-      rod([-33, 0, z + dz], [-30.5, 8.65, z + dz], 0.32, iron);
-      rod([-30.6, 7.5, z + dz], [-17.5, 9.4, z + dz], 0.2, slate);
-      rod([-30.6, 7.5, z + dz], [-22.5, 9.25, z + dz], 0.13, steel);
-      rod([-29.8, 3.95, z + dz], [-20.1, 0.75, z + dz], 0.3, steel);
-    }
-    if (seg % 2 === 0) panel('tribuna', [-17.015, 9.55, z], 18.0, 0.91, -Math.PI / 2);
-    if (seg % 2 === 1) flag(-31, 8.78, z, 4.5);
+    if (seg % 2 === 0) panel('tribuna', [-16.1, 9.95, z], 18.0, 0.91, -Math.PI / 2);
   }
 
-  // Pit apron with a 16-bay pit building: open, dark workshop mouths below a
-  // continuous glazed hospitality storey. Color-coded garage numbers face the road.
-  box(25, -0.18, 63, 30, 0.34, 276, '#666a66');
-  box(11.3, 0.02, 63, 0.16, 0.03, 275, chalk);
-  box(18.8, 0.022, 63, 0.16, 0.03, 275, brass);
-  const bays = ['#d74637', '#d3b565', '#36756b', '#a7b2aa'];
+  // 10-Bay GT3 Pit Garage Complex along the drivable pit lane (+X = 22.8 m)
+  // Plus Pit-Wall Team Timing Stands atop the concrete pit wall (d = 9.74 m)
+  // Plus illuminated Player Pit Box Portal & Lollipop at Bay 01 (s = 70, d = 17.2 m)
   for (let i = 0; i < 16; i++) {
-    const z = -58 + i * 15.8;
-    box(32.7, 2.03, z, 11.8, 4.12, 15.72, '#535b59');
-    box(27.13, 2.04, z, 0.78, 4.1, 14.9, '#303739');
-    box(27.05, 2.15, z, 1.38, 3.95, 0.32, '#98a09a');
-    for (const dz of [-7.45, 7.45]) box(24.28, 2.08, z + dz, 6.65, 4.16, 0.54, '#c6c5b7');
-    for (const dz of [-3.7, 3.7]) {
-      box(26.68, 2.96, z + dz, 0.12, 1.92, 6.55, '#727d7b');
-      for (let j = 0; j < 5; j++) box(26.59, 2.14 + j * 0.36, z + dz, 0.07, 0.053, 6.55, '#424a4b');
-    }
-    box(29.45, 4.16, z, 17.5, 0.49, 15.8, chalk);
-    box(20.74, 4.11, z, 0.14, 0.65, 15.8, bays[i % 4]);
-    box(31.9, 5.53, z, 12.8, 2.3, 15.75, '#b2b6ac');
-    box(25.25, 5.62, z, 0.4, 1.85, 15.6, '#708e95', 0, 0, 0, 'glass');
-    for (let j = 0; j < 5; j++) box(25.01, 5.63, z - 6.25 + j * 3.11, 0.19, 2.04, 0.115, iron);
-    box(30.65, 6.91, z, 15.45, 0.35, 15.8, '#dadbcf');
-    box(22.92, 6.76, z, 0.16, 0.64, 15.8, '#aeb4ad');
-    panel('bay' + i, [20.62, 4.12, z - 4.8], 1.55, 0.63, Math.PI / 2);
-    if (i % 3 !== 1) panel(i % 2 ? 'off' : 'pits', [22.82, 6.78, z], 9.8, 0.69, Math.PI / 2);
-    strip(z - 6.7, 20, 3.2, 0.12, chalk);
+    const z = -42 + i * 16.0;
+    kit.placeKit('PitGarageBay', [26.2, 0, z], 0);
+    panel('bay' + i, [22.4, 4.22, z - 4.8], 1.55, 0.63, Math.PI / 2);
+    if (i % 3 !== 1) panel(i % 2 ? 'off' : 'pits', [24.1, 7.05, z], 9.8, 0.69, Math.PI / 2);
   }
-  // Projecting race-control box and freestanding two-faced timing monolith.
-  box(28.5, 8.15, 75, 15.6, 2.52, 31, '#59737a', 0, 0, 0, 'glass');
-  box(28, 9.67, 75, 18.3, 0.49, 34.2, chalk);
-  box(28, 7.02, 75, 17.3, 0.32, 33.5, '#aab2ab');
-  for (let j = 0; j < 11; j++) box(20.55, 8.15, 60.4 + j * 2.9, 0.2, 2.44, 0.111, iron);
-  for (let z = 64; z < 89; z += 6) flag(30, 9.9, z, 4.1);
-  box(16.8, 8.1, 98, 3.65, 16.2, 2.35, iron);
-  box(16.8, 16.35, 98, 4.08, 0.35, 2.7, scarlet);
-  panel('tower', [16.8, 10.9, 96.79], 3.39, 10.35, 0);
-  panel('tower', [14.95, 10.9, 98], 2.14, 10.35, Math.PI / 2);
-  for (let j = 0; j < 4; j++) box(16.8, 2.96 + j * 0.56, 96.78, 3, 0.105, 0.07, brass);
+  // Pit-wall team timing stands spaced along the separating concrete pit wall
+  for (let s = 18; s <= 230; s += 26) {
+    const p = c.at(s, PIT_WALL_D + 0.34);
+    kit.placeKit('PitWallStand', [p.x, p.y + 1.02, p.z], p.yaw);
+  }
+  // Player Pit Box (Bay 01 at s = 70, d = 17.2 m) — illuminated overhead portal & lollipop stop board!
+  {
+    const pb = c.at(pitBoxStation(0), PIT_BOX_D);
+    kit.placeKit('PitBoxPortal', [pb.x, pb.y, pb.z], pb.yaw);
+  }
 
-  function bridge(s: number, id: string, start = false) {
-    const p = c.at(s),
-      yaw = p.yaw,
-      span = start ? 27 : 28.5;
-    const loc = (d: number, h: number, z = 0): Vec => {
-      const v = point(p, d, h);
-      v[0] += Math.sin(yaw) * z;
-      v[2] += Math.cos(yaw) * z;
-      return v;
-    };
-    for (const side of [-1, 1]) {
-      const off = (side * span) / 2;
-      for (const z of [-1.08, 1.08]) rod(loc(off, -0.1, z), loc(off, 7.86, z), 0.32, steel);
-      for (let i = 0; i < 5; i++)
-        rod(
-          loc(off, i * 1.47, i % 2 ? -1.08 : 1.08),
-          loc(off, (i + 1) * 1.47, i % 2 ? 1.08 : -1.08),
-          0.16,
-          slate,
-        );
-    }
-    for (const z of [-1, 1])
-      for (const y of [6.84, 8.88]) rod(loc(-span / 2, y, z), loc(span / 2, y, z), 0.19, steel);
-    for (let x = -span / 2; x < span / 2 - 0.6; x += 2.5)
-      rod(loc(x, 6.86, 1), loc(Math.min(span / 2, x + 2.5), 8.86, 1), 0.16, slate);
-    place('box', loc(0, 8.03), [span + 1, 2.24, 1.93], charcoal, yaw);
-    panel(id, loc(0, 8.03, -0.99), span + 0.95, 2.23, yaw);
-    panel('apex', loc(0, 8.03, 1.0), span + 0.96, 2.23, yaw + Math.PI);
-    if (start) {
-      place('box', loc(0, 6.43, -0.63), [5.3, 1.33, 0.78], charcoal, yaw);
-      for (let j = 0; j < 5; j++)
-        place('box', loc((j - 2) * 0.94, 6.47, -1.02), [0.79, 1.06, 0.28], '#162025', yaw);
+  // Overhead Space-Frame Start Gantry + Turn 1 & Chicane Bridges
+  for (const [s, id, isStart] of [
+    [64, 'hero', true],
+    [528, 'turn1', false],
+    [2310, 'chicane', false],
+  ] as const) {
+    const p = c.at(s);
+    kit.placeKit('StartGantry', [p.x, p.y, p.z], p.yaw);
+    const sn = Math.sin(p.yaw),
+      cs = Math.cos(p.yaw);
+    const loc = (zOff: number): Vec => [p.x + sn * zOff, p.y + 7.92, p.z + cs * zOff];
+    panel(id, loc(-0.98), 27.6, 2.1, p.yaw);
+    panel('apex', loc(0.98), 27.6, 2.1, p.yaw + Math.PI);
+    if (isStart) {
+      // Pit-entry overhead advisory banner
+      const pe = c.at(c.length - PIT_WALL_START_BACK - 10, PIT_WALL_D + 5.5);
+      panel('pitexit', [pe.x, pe.y + 4.8, pe.z], 9.2, 1.35, pe.yaw);
     }
   }
-  bridge(64, 'hero', true);
-  bridge(528, 'turn1');
-  bridge(2310, 'chicane');
+
+  // 5 FIA Start Signal Discs seated inside StartGantry's sculpted 5-pod visors (custom disc geometry, no CreateCylinder)
   const darkLight = plain(scene, 'start signal unlit', 0.38, 0.25);
   darkLight.albedoColor = Color3.FromHexString('#421f1b').toLinearSpace();
   const liveLight = plain(scene, 'FIA signal red', 0.33);
-  liveLight.emissiveColor = new Color3(2.15, 0.017, 0.008);
+  liveLight.emissiveColor = new Color3(2.25, 0.017, 0.008);
   liveLight.albedoColor = new Color3(0.41, 0.005, 0.002);
+  const discVd = new VertexData();
+  const dp: number[] = [0, 0, 0],
+    dn: number[] = [0, 0, -1],
+    du: number[] = [0.5, 0.5],
+    di: number[] = [];
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * Math.PI * 2;
+    dp.push(Math.cos(a) * 0.26, Math.sin(a) * 0.26, 0);
+    dn.push(0, 0, -1);
+    du.push(0.5 + 0.5 * Math.cos(a), 0.5 + 0.5 * Math.sin(a));
+    di.push(0, 1 + ((k + 1) % 16), 1 + k);
+  }
+  discVd.positions = dp;
+  discVd.normals = dn;
+  discVd.uvs = du;
+  discVd.indices = di;
   const lights: Mesh[] = [];
   for (let j = 0; j < 5; j++) {
-    const m = CreateCylinder(
-      'start gantry.signal ' + (j + 1),
-      { height: 0.1, diameter: 0.56, tessellation: 16 },
-      scene,
-    );
-    m.rotation.x = Math.PI / 2;
-    m.position.set((j - 2) * 0.94, 6.48, 62.77);
+    const m = new Mesh('start gantry.signal ' + (j + 1), scene);
+    discVd.applyToMesh(m);
+    m.position.set((j - 2) * 0.96, 6.38, 62.82);
     m.material = darkLight;
     m.isPickable = false;
     m.freezeWorldMatrix();
     lights.push(m);
   }
 
-  // Number boards, sponsored short hoardings, pressed-rail pillars, Tecpro blocks,
-  // cranked catch fence and floodlight banks continue through all three sectors.
+  // Breakaway 150/100/50m Brake Boards + 60 km/h FIA Pit Entry Speed Board
   for (const [apex, side] of [
     [665, -1],
     [1640, 1],
     [2460, -1],
     [3970, -1],
-  ])
+  ]) {
     for (const n of [150, 100, 50]) {
       const p = c.at(apex - n),
-        d = side * (wallOffset(p, side, c.length) - 0.14),
-        v = point(p, d, 1.65);
-      place('box', v, [2.03, 1.03, 0.115], chalk, p.yaw);
-      const v2: Vec = [v[0] - 0.07 * Math.sin(p.yaw), v[1], v[2] - 0.07 * Math.cos(p.yaw)];
-      panel('board' + n, v2, 2.0, 1.01, p.yaw);
-      const leg = point(p, d, 0.63);
-      place('box', leg, [0.13, 1.35, 0.13], steel, p.yaw);
+        d = side * (wallOffset(p, side, c.length) - 0.22),
+        v = point(p, d, 0);
+      kit.placeKit('BrakeBoardFrame', v, p.yaw);
+      const pv: Vec = [v[0] - 0.04 * Math.sin(p.yaw), v[1] + 1.65, v[2] - 0.04 * Math.cos(p.yaw)];
+      panel('board' + n, pv, 2.0, 1.01, p.yaw);
     }
+  }
+  // 60 km/h Pit-entry limiter marker board at pit entry line
+  {
+    const pe = c.at(c.length - PIT_WALL_START_BACK - 3, PIT_WALL_D + 0.35);
+    kit.placeKit('BrakeBoardFrame', [pe.x, pe.y, pe.z], pe.yaw);
+    panel('board60', [pe.x - 0.05 * Math.sin(pe.yaw), pe.y + 1.65, pe.z - 0.05 * Math.cos(pe.yaw)], 2.0, 1.01, pe.yaw);
+  }
+
+  // FIA Marshal Posts with Digital Flag LED Panels around all major corners
+  for (const [s, side] of [
+    [640, -1],
+    [980, 1],
+    [1420, -1],
+    [1720, 1],
+    [2440, -1],
+    [2820, -1],
+    [3520, 1],
+    [4010, -1],
+  ]) {
+    const p = c.at(s),
+      d = side * (wallOffset(p, side, c.length) + 2.8),
+      v = point(p, d, 0);
+    kit.placeKit('MarshalPost', v, p.yaw + (side < 0 ? 0 : Math.PI));
+    // Digital FIA LED flag panel face
+    const b = flagPanels.positions.length / 3;
+    const fx = v[0] - side * 0.9 * Math.cos(p.yaw),
+      fz = v[2] + side * 0.9 * Math.sin(p.yaw),
+      fy = v[1] + 3.75;
+    const sn = Math.sin(p.yaw),
+      cs = Math.cos(p.yaw);
+    for (const [lx, ly] of [
+      [-0.44, -0.32],
+      [0.44, -0.32],
+      [0.44, 0.32],
+      [-0.44, 0.32],
+    ])
+      vertex(flagPanels, [fx + lx * sn, fy + ly, fz + lx * cs], [0.5, 0.5]);
+    quad(flagPanels, b, b + 1, b + 2, b + 3);
+  }
+  const flagLedMat = plain(scene, 'FIA digital flag panel', 0.25);
+  flagLedMat.emissiveColor = new Color3(0.08, 1.45, 0.28); // Green clear track (shifts to amber/blue in rain)
+  flagLedMat.backFaceCulling = false;
+  publish(scene, 'venue.marshalFlagPanels', flagPanels, flagLedMat);
+
+  // Guardrail I-Beam Posts, Sculpted Tecpro Blocks, Belted Tire Stacks, Catch-Fence & Hoardings
   const sponsors = ['vet', 'apex', 'oro', 'off'];
   for (let s = 0; s < c.length; s += 12) {
     const p = c.at(s);
     for (const side of [-1, 1]) {
-      const d = wallOffset(p, side, c.length),
-        post = (s < 460 || s > c.length - 82) && side === 1,
-        fc = s < 305 || s > c.length - 72 || trapSide(s) === side;
-      if (!post) place('box', point(p, side * (d + 0.19), 0.56), [0.16, 1.2, 0.21], steel, p.yaw);
-      if (fc) {
-        const o = side * (d + 0.35);
-        rod(point(p, o, 0.05), point(p, o, 2.9), 0.074, slate);
-        rod(point(p, o, 2.9), point(p, o - side * 0.58, 3.54), 0.075, steel);
+      const d = wallOffset(p, side, c.length);
+      const isPitSide = side === 1 && (s < PIT_WALL_END_S + 8 || s > c.length - PIT_WALL_START_BACK - 8);
+      const isTrap = trapSide(s) === side;
+      const needsFence = s < 305 || s > c.length - 72 || isTrap;
+
+      if (!isPitSide && !isTrap) {
+        kit.placeKit('ArmcoPost', point(p, side * (d + 0.16), 0), p.yaw + (side < 0 ? Math.PI : 0));
+      }
+      if (isTrap) {
+        // Interlocking Tecpro blocks & belted tire stacks along high-energy gravel runoff zones
+        const block = Math.floor(s / 12) % 2 === 0 ? 'TecproRed' : 'TecproWhite';
+        kit.placeKit(block, point(p, side * (d + 0.35), 0), p.yaw + (side < 0 ? Math.PI : 0));
+        if (s % 24 === 0) {
+          kit.placeKit('TireStack', point(p, side * (d + 1.05), 0), p.yaw + (side < 0 ? Math.PI : 0));
+        }
+      }
+      if (needsFence && !isPitSide) {
+        const o = side * (d + 0.42);
+        kit.placeKit('CatchFencePost', point(p, o, 0), p.yaw + (side < 0 ? Math.PI : 0));
         const q = c.at(Math.min(c.length, s + 12)),
-          oo = side * (wallOffset(q, side, c.length) + 0.35),
+          oo = side * (wallOffset(q, side, c.length) + 0.42),
           u = s / 1.32,
           v = (s + 12) / 1.32,
           b = fence.positions.length / 3;
         vertex(fence, point(p, o, 0.91), [u, 0]);
         vertex(fence, point(q, oo, 0.91), [v, 0]);
-        vertex(fence, point(q, oo, 2.9), [v, 1.5]);
-        vertex(fence, point(p, o, 2.9), [u, 1.5]);
+        vertex(fence, point(q, oo, 2.95), [v, 1.5]);
+        vertex(fence, point(p, o, 2.95), [u, 1.5]);
         quad(fence, b, b + 1, b + 2, b + 3);
-        rod(point(p, o, 2.85), point(q, oo, 2.85), 0.04, '#77807a');
       }
-      if (s % 24 === 0 && (s < 165 || s > c.length - 52 || (Math.floor(s / 85) % 4 === 1 && !post))) {
+      if (s % 24 === 0 && !isPitSide && (s < 165 || s > c.length - 52 || Math.floor(s / 85) % 4 === 1)) {
         const len = s < 166 ? 9.8 : 8.2,
-          dst = side * (d - 0.13),
-          v = point(p, dst, 0.69);
-        place('box', v, [0.12, 0.73, len], charcoal, p.yaw);
+          dst = side * (d - 0.14);
         panel(
           sponsors[(Math.floor(s / 24) + (side < 0 ? 0 : 1)) % 4],
-          point(p, dst - side * 0.076, 0.69),
+          point(p, dst, 0.69),
           len,
           0.73,
           p.yaw + (side * Math.PI) / 2,
@@ -580,97 +570,98 @@ export function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof r
       }
     }
   }
-  for (let i = 0; i < 30; i++) {
-    const s = i < 8 ? -50 + i * 47 : 350 + (i - 8) * 180,
+
+  // Stadium Floodlight Towers (Blender tapered tubular masts + 4-head LED banks)
+  for (let i = 0; i < 26; i++) {
+    const s = i < 7 ? -42 + i * 48 : 350 + (i - 7) * 205,
       side = i % 2 ? -1 : 1,
       p = c.at(s),
-      off = side * (s < 310 ? (side > 0 ? 41 : 38) : wallOffset(p, side, c.length) + 4);
+      off = side * (s < 310 ? (side > 0 ? 39 : 36) : wallOffset(p, side, c.length) + 4.5);
     const v = point(p, off),
-      y = Math.max(v[1], floor(v[0], v[2])),
-      h = 14.5 + (i % 4) * 1.1;
-    box(v[0], y + h / 2, v[2], 0.42, h, 0.42, steel, p.yaw, 0, 0, 'mast');
-    box(v[0], y + h, v[2], 3.6, 0.18, 0.54, iron, p.yaw);
-    for (let j = 0; j < 4; j++) {
-      const k = (j - 1.5) * 0.83;
-      box(
-        v[0] + Math.cos(p.yaw) * k,
-        y + h - 0.18,
-        v[2] - Math.sin(p.yaw) * k,
-        0.65,
-        0.47,
-        0.38,
-        '#c4c6af',
-        p.yaw,
-        0.3,
-      );
-    }
+      y = Math.max(v[1], floor(v[0], v[2]));
+    kit.placeKit('FloodlightTower', [v[0], y, v[2]], p.yaw + (side < 0 ? Math.PI : 0));
   }
-  // Stands at other points give a moving TV camera a meaningful foreground and
-  // make the returning straight distinct from the pit complex.
+
+  // Trackside Corner Grandstands (Blender space-frame bays)
   for (const s of [734, 1668, 2488, 2900, 3970]) {
     const p = c.at(s),
       side = trapSide(s) || -1,
-      edge = wallOffset(p, side, c.length) + 5;
-    for (let j = 0; j < 6; j++) {
-      const v = point(p, side * (edge + j * 1.2), 0.75 + j * 0.45);
-      place('box', v, [1.3, 0.51, 28], chalk, p.yaw);
-      place('crowd', [v[0], v[1] + 0.87, v[2]], [26.5, 1.23, 1], chalk, p.yaw + (side * Math.PI) / 2);
-    }
-    const y = point(p, side * (edge + 3.3), 5.55);
-    place('box', y, [10.2, 0.38, 29.6], scarlet, p.yaw, 0, -side * 0.085);
-    for (const z of [-12, 12]) {
-      const v = point(p, side * (edge + 6), 2.6);
-      place(
-        'box',
-        [v[0] + z * Math.sin(p.yaw), v[1], v[2] + z * Math.cos(p.yaw)],
-        [0.28, 5.6, 0.28],
-        iron,
-        p.yaw,
-      );
-    }
+      edge = wallOffset(p, side, c.length) + 6;
+    const v = point(p, side * edge, 0);
+    kit.placeKit('GrandstandBay', v, p.yaw + (side > 0 ? Math.PI : 0), [0.85, 0.85, 0.85]);
   }
 
-  // Mixed, slightly irregular plantations. Reject neighbouring pieces of circuit,
-  // and leave the occupied paddock clear, including the outside of the hairpin.
-  const trees = grove(scene);
-  for (let i = 0; i < 690; i++) {
+  // Dense Static Multi-Species Botanical Forest (Cypress, Maritime Pine, Holm Oak, Olive)
+  // + Real Poly Haven Photogrammetry Mossy Rocks, Ferns, Shrubs & Grass Clumps!
+  const speciesPool: Species[] = ['Cypress', 'Pine', 'Oak', 'Olive'];
+  for (let i = 0; i < 1050; i++) {
     const s = rnd() * c.length,
       p = c.at(s),
       side = rnd() < 0.5 ? -1 : 1,
-      d = side * (23 + rnd() * 94),
+      d = side * (wallOffset(p, side, c.length) + 9.5 + rnd() * 115),
       v = point(p, d);
-    if (v[0] > -44 && v[0] < 52 && v[2] > -100 && v[2] < 240) continue;
+    if (v[0] > -38 && v[0] < 44 && v[2] > -105 && v[2] < 275) continue;
     const near = c.nearest(v[0], v[2]),
       np = c.at(near.s);
-    if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 9) continue;
-    const tall = rnd() < 0.56,
-      h = .65 + rnd() * .57,
-      w = (tall ? .71 : .76) + rnd() * .51;
-    trees.plant(
-      tall ? 'cypress' : 'pine',
-      [v[0], floor(v[0], v[2]), v[2]],
-      [w, h, w * (0.82 + rnd() * 0.27)],
-      rnd() * 6.28,
-      i % 4,
-    );
+    if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 8.0) continue;
+    const rChoice = rnd();
+    const sp: Species = rChoice < 0.34 ? 'Cypress' : rChoice < 0.66 ? 'Pine' : rChoice < 0.85 ? 'Oak' : 'Olive';
+    const h = 0.82 + rnd() * 0.62,
+      w = 0.84 + rnd() * 0.52;
+    forest.plantTree(sp, [v[0], floor(v[0], v[2]) - 0.12, v[2]], [w, h, w * (0.88 + rnd() * 0.24)], rnd() * 6.28, i % 4, false);
   }
-  for (let i = 0; i < 310; i++) {
+  // Lush hillside groves framing the main straight & Turn 1 Apennine skyline!
+  for (let i = 0; i < 240; i++) {
+    const side = i % 2 === 0 ? -1 : 1;
+    const x = side < 0 ? -42 - rnd() * 145 : 46 + rnd() * 145;
+    const z = -90 + rnd() * 820;
+    const near = c.nearest(x, z),
+      np = c.at(near.s);
+    if (Math.hypot(np.x - x, np.z - z) < wallOffset(np, Math.sign(near.d), c.length) + 9) continue;
+    const sp: Species = i % 3 === 0 ? 'Cypress' : i % 3 === 1 ? 'Pine' : 'Oak';
+    const h = 0.9 + rnd() * 0.65,
+      w = 0.88 + rnd() * 0.52;
+    forest.plantTree(sp, [x, floor(x, z) - 0.15, z], [w, h, w], rnd() * 6.28, i % 4, false);
+  }
+  // Distant ridge forest (LOD1 silhouettes, zero shadow cost)
+  for (let i = 0; i < 360; i++) {
     const x = -470 + rnd() * 2240,
       z = i % 2 ? -630 - rnd() * 210 : 820 + rnd() * 230,
-      h = .65 + rnd() * .62,
-      w = .56 + rnd() * .56;
-    trees.plant(
-      i % 4 === 0 ? 'cypress' : 'pine',
-      [x, floor(x, z) - 0.08, z],
-      [w, h, w],
-      rnd() * 6.28,
-      i % 4,
-      true,
-    );
+      h = 0.85 + rnd() * 0.72,
+      w = 0.78 + rnd() * 0.58;
+    forest.plantTree(speciesPool[i % 4], [x, floor(x, z) - 0.15, z], [w, h, w], rnd() * 6.28, i % 4, true);
   }
-  trees.finish();
-  // Terracotta farmsteads and a campanile near the northern ridge: a distinctly
-  // Italian horizon even when the player is away from motorsport architecture.
+
+  // Layer genuine Poly Haven photogrammetry rocks, shrubs, ferns & grass clumps along corners & banks!
+  for (let i = 0; i < 420; i++) {
+    const s = rnd() * c.length,
+      p = c.at(s),
+      side = rnd() < 0.5 ? -1 : 1,
+      wallD = wallOffset(p, side, c.length),
+      d = side * (wallD + 2.2 + rnd() * 26),
+      v = point(p, d);
+    if (v[0] > -44 && v[0] < 54 && v[2] > -100 && v[2] < 275) continue;
+    const near = c.nearest(v[0], v[2]),
+      np = c.at(near.s);
+    if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 1.8) continue;
+    const y = Math.min(v[1], floor(v[0], v[2])) + 0.05;
+    const roll = rnd();
+    if (roll < 0.28) {
+      const sc = 0.85 + rnd() * 1.45;
+      forest.plantBiome('rock_moss', [v[0], y - 0.15, v[2]], [sc, sc * (0.75 + rnd() * 0.4), sc], rnd() * 6.28, i);
+    } else if (roll < 0.54) {
+      const sc = 1.2 + rnd() * 1.2;
+      forest.plantBiome('shrub', [v[0], y, v[2]], [sc, sc, sc], rnd() * 6.28, i);
+    } else if (roll < 0.76) {
+      const sc = 1.1 + rnd() * 1.1;
+      forest.plantBiome('fern', [v[0], y, v[2]], [sc, sc, sc], rnd() * 6.28, i);
+    } else {
+      const sc = 1.3 + rnd() * 1.3;
+      forest.plantBiome('grass_clump', [v[0], y, v[2]], [sc, sc, sc], rnd() * 6.28, i);
+    }
+  }
+
+  // Tuscan Hillside Villas & Campanile (Blender pitched-roof stone & terracotta architecture)
   for (const [x, z] of [
     [-83, 778],
     [26, 823],
@@ -681,23 +672,11 @@ export function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof r
     [-213, 496],
     [1150, -540],
   ]) {
-    const y = floor(x, z);
-    box(x, y + 3.5, z, 14, 7, 9, '#c9b794');
-    for (const side of [-1, 1]) box(x, y + 7.67, z + side * 2.42, 15.2, 0.48, 5.24, '#a46041', 0, side * 0.3);
-    for (const dx of [-4.9, -1.7, 1.7, 4.9])
-      for (const dy of [2.2, 5.1]) box(x + dx, y + dy, z - 4.53, 1.13, 1.55, 0.1, '#4c5349');
+    kit.placeKit('TuscanVilla', [x, floor(x, z) - 0.2, z], rnd() * 0.6);
   }
-  {
-    const x = 26,
-      z = 839,
-      y = floor(x, z);
-    box(x, y + 9, z, 5.5, 18, 5.5, '#d6c29d');
-    box(x, y + 16, z - 2.81, 2.5, 2.68, 0.12, '#615a4e');
-    box(x, y + 18.3, z, 6.6, 0.72, 6.6, '#b69b75');
-    place('mast', [x, y + 20.2, z], [4.98, 3.4, 4.98], '#8d593d', Math.PI / 4);
-    box(x, y + 22.8, z, 0.19, 2.9, 0.19, iron);
-  }
+  kit.placeKit('TuscanCampanile', [26, floor(26, 839) - 0.2, 839], 0);
 
+  // Catch-fence woven mesh
   const link = new DynamicTexture('galvanised catch mesh', 128, scene, true, Texture.TRILINEAR_SAMPLINGMODE),
     ctx = link.getContext() as CanvasRenderingContext2D;
   ctx.strokeStyle = '#90968a';
@@ -711,6 +690,7 @@ export function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof r
     ctx.stroke();
   }
   link.hasAlpha = true;
+  link.anisotropicFilteringLevel = 16;
   link.wrapU = link.wrapV = Texture.WRAP_ADDRESSMODE;
   link.update(true);
   const chain = plain(scene, 'catch fencing', 0.68, 0.24);
@@ -718,18 +698,27 @@ export function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof r
   chain.transparencyMode = PBRMaterial.PBRMATERIAL_ALPHATEST;
   chain.alphaCutOff = 0.21;
   chain.backFaceCulling = false;
-  const flagMat = plain(scene, 'tricolore', 0.92);
-  flagMat.backFaceCulling = false;
-  flagMat.twoSidedLighting = true;
+
   publish(scene, 'venue.catch fencing', fence, chain);
   publish(scene, 'venue.trackside lettering', signs, atlas.mat);
-  publish(scene, 'venue.tricolori', cloth, flagMat);
-  finish();
+  publish(scene, 'venue.terrace crowds', crowdGeom, peopleMat);
+  publish(scene, 'venue.grid markings', gridPaint, mats.paint);
+  kit.finishKit();
+  forest.finish();
+
   let last = -1;
-  return (n: number) => {
-    n = Math.max(0, Math.min(5, Math.floor(n)));
-    if (n === last) return;
-    for (let j = 0; j < 5; j++) lights[j].material = j < n ? liveLight : darkLight;
-    last = n;
+  return {
+    setLights(n: number) {
+      n = Math.max(0, Math.min(5, Math.floor(n)));
+      if (n === last) return;
+      for (let j = 0; j < 5; j++) lights[j].material = j < n ? liveLight : darkLight;
+      last = n;
+    },
+    setFlagWeather(w: Weather) {
+      // Digital FIA marshal flag panels switch to wet/slippery amber in Heavy Rain
+      if (w === 'rain') flagLedMat.emissiveColor.set(1.65, 0.92, 0.06);
+      else if (w === 'damp') flagLedMat.emissiveColor.set(0.75, 1.25, 0.14);
+      else flagLedMat.emissiveColor.set(0.08, 1.45, 0.28);
+    },
   };
 }

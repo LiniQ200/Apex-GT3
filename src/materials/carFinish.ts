@@ -24,7 +24,7 @@ export function pbr(scene: Scene, name: string, hex: string, metallic: number, r
 
 function canvasMap(scene: Scene, name: string, w: number, h: number, draw: (c: Ctx) => void) {
   const t = new DynamicTexture(name, { width: w, height: h }, scene, true, Texture.TRILINEAR_SAMPLINGMODE);
-  t.anisotropicFilteringLevel = 8;
+  t.anisotropicFilteringLevel = 16;
   draw(t.getContext() as unknown as Ctx);
   t.update(false);
   return t;

@@ -67,10 +67,10 @@ export function powertrain(g: Graph, mix: AudioNode) {
     if (p.gear > 0 && prevGear > 0 && p.gear !== prevGear) {
       const up = p.gear > prevGear;
       if (up) {
-        // Sample-clocked so the 95 ms cut completes even during a render stall.
+        // Sample-clocked so the 45 ms flat-shift ignition cut completes cleanly.
         ignition.gain.cancelScheduledValues(now);
-        ignition.gain.setTargetAtTime(0.06, now, 0.004);
-        ignition.gain.setTargetAtTime(1, now + 0.095, 0.012);
+        ignition.gain.setTargetAtTime(0.06, now, 0.003);
+        ignition.gain.setTargetAtTime(1, now + 0.045, 0.008);
       } else {
         blipEnd = now + 0.11;
       }
@@ -87,6 +87,14 @@ export function powertrain(g: Graph, mix: AudioNode) {
       pulse(snap.gain, now, 0.18 + Math.random() * 0.32, 0.028 + Math.random() * 0.04);
       pulse(thud.gain, now, 0.045 + Math.random() * 0.055, 0.055);
       nextPop = now + 0.105 + Math.random() ** 2 * 0.46;
+    }
+
+    // 60 km/h FIA pit-limiter rhythmic fuel-cut ignition stutter
+    if (p.pitLimiter && speed > 14.8 && p.pitState !== 'servicing') {
+      const stutter = Math.sin(now * 86) > 0 ? 1.0 : 0.24;
+      ignition.gain.setTargetAtTime(stutter, now, 0.004);
+    } else if (now > nextPop - 0.05) {
+      ignition.gain.setTargetAtTime(1, now, 0.012);
     }
 
     const blip = clamp((blipEnd - now) / 0.11),

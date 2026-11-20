@@ -41,7 +41,7 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
   }
   try {
     const cameras = createCameras(scene, circuit), light = lighting(scene);
-    let trackRoot: TransformNode | undefined, track: Pick<TrackScene, 'setWeather' | 'setLights'> | undefined;
+    let trackRoot: TransformNode | undefined, track: Pick<TrackScene, 'setWeather' | 'setLights' | 'update'> | undefined;
     let pending: Promise<void> | undefined;
     // Check the submitted game canvas, not the HTML dashboard or an intermediate
     // render target. This small, one-shot readback never runs in steady driving.
@@ -85,12 +85,13 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
     }
     return {
       canvas, backend, adapter, software, reason,
-      async prepareTrack(road, weather) {
+      async prepareTrack(road, weather, surfaceGrid) {
         const { buildTrack } = await import('../track');
         if (scene.isDisposed) return;
         const before = new Set(scene.rootNodes);
-        const { setLights, setWeather } = buildTrack(scene, circuit, road);
-        track = { setLights, setWeather };
+        const { setLights, setWeather, update } = await buildTrack(scene, circuit, road, surfaceGrid);
+        if (scene.isDisposed) return;
+        track = { setLights, setWeather, update };
         trackRoot = new TransformNode('circuit assembly', scene);
         for (const n of scene.rootNodes.slice()) if (!before.has(n) && n !== trackRoot) n.parent = trackRoot;
         trackRoot.setEnabled(false);
@@ -156,10 +157,11 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
         const driverView = s.phase !== 'garage' && s.camera === 'cockpit' && !lookBack;
         rigs.forEach((rig, i) => {
           const driver = s.drivers[i];
-          if (driver) rig.update(driver, dt, driverView && driver.id === 0);
+          if (driver) rig.update(driver, dt, driverView && driver.id === 0, s.settings.weather);
         });
         cameras.update(s, lookBack, dt);
         track?.setLights(s.lights);
+        track?.update(s, dt);
         light.update(s, rigs, engine.getDeltaTime());
         scene.render();
       },

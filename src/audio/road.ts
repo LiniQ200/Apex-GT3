@@ -23,8 +23,13 @@ export function road(g: Graph, mix: AudioNode) {
     const buffeting = g.filter(g.pan(wind, side * 0.75), 'bandpass', 640, 0.38);
     g.noise(buffeting, side > 0 ? 1.27 : 0.71);
   }
+  // Wet-road hydro-hiss (spray/evacuation hiss scaled by speed and local track wetness)
+  const hydro = g.gain(mix, 0);
+  const hydroFilter = g.filter(hydro, 'bandpass', 2400, 0.65);
+  g.noise(hydroFilter, 0.53);
 
-  return (p: Driver, cockpit: boolean, damp: boolean, now: number) => {
+  return (p: Driver, cockpit: boolean, wetness: number, now: number) => {
+    const damp = wetness > 0.15;
     const speed = clamp(Math.abs(p.speed), 0, 125);
     const airspeed = clamp(speed / 82),
       rolling = clamp(speed / 6);
@@ -34,8 +39,6 @@ export function road(g: Graph, mix: AudioNode) {
     const loose = p.surface === 'gravel' || p.surface === 'grass';
     for (let i = 0; i < tires.length; i++) {
       const t = tires[i];
-      // Driver exposes one slip ratio. Distribute it across FL/FR/RL/RR
-      // using the actual suspension loads and driven/braked axle demand.
       const compression = clamp(p.wheelCompressionM[i] ?? 0.055, 0, 0.22);
       const contact = clamp(compression / 0.055, 0.25, 1.45);
       const axle = i < 2 ? 0.87 + 0.37 * brake : 0.87 + 0.33 * load;
@@ -47,10 +50,11 @@ export function road(g: Graph, mix: AudioNode) {
       smooth(t.tread.frequency, loose ? 410 + 520 * airspeed : hz * 0.78, now);
       smooth(t.squeal.frequency, hz, now);
     }
-    // Sawtooth block spacing in metres; crossing speed determines the pitch.
     smooth(kerb.frequency, clamp(speed / 0.72, 12, 170), now, 0.017);
     smooth(kerbLevel.gain, p.surface === 'kerb' ? rolling * (0.105 + 0.11 * airspeed) : 0, now, 0.012);
     smooth(kerbPan.pan, clamp(p.d / 7, -0.72, 0.72), now);
     smooth(wind.gain, (cockpit ? 0.29 : 0.55) * airspeed ** 1.8, now, 0.11);
+    smooth(hydroFilter.frequency, 1500 + 2100 * airspeed, now, 0.08);
+    smooth(hydro.gain, clamp(wetness) * (cockpit ? 0.24 : 0.38) * clamp(speed / 45) ** 1.35, now, 0.07);
   };
 }

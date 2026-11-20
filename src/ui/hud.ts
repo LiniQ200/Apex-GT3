@@ -1,5 +1,6 @@
 import { raceOrder, SPRINT_LAPS } from '../physics/race';
-import { teams, type Circuit, type Driver, type RaceState } from '../types';
+import { COMPOUNDS } from '../physics/tires';
+import { teams, type Circuit, type Driver, type RaceState, type Weather } from '../types';
 import { circuitGraphic, icon, insignia } from './graphics';
 import { createPitwall } from './pitwall';
 import './pitwall.css';
@@ -12,9 +13,13 @@ export function clock(seconds: number) {
 const two = (n: number) => String(n).padStart(2, '0');
 const clip = (n: number) => Math.max(0, Math.min(1, n));
 const cameras = { chase: 'CHASE', cockpit: 'HELMET', hood: 'ONBOARD', tv: 'TRACKSIDE' };
+const weatherLabels: [Weather, string][] = [
+  ['clear', 'CLEAR'],
+  ['golden', 'GOLDEN'],
+  ['damp', 'DAMP'],
+  ['rain', 'RAIN'],
+];
 
-// Timestamp a car actually crossed the following car's current distance. Before the
-// first crossing (e.g. standing grid), report metres rather than invent a time gap.
 class Transponder {
   private static readonly size = 512;
   private samples = new Float64Array(2 * Transponder.size);
@@ -53,14 +58,23 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     <section class="ax-laptime ax-glass"><div class="ax-lap-line"><div class="ax-lap-n"><small>LAP</small><b data-v="lap">01/03</b></div><strong data-v="clock">0:00.000</strong></div>
       <div class="ax-sectors">${[1, 2, 3].map((i) => `<span data-sector>S${i}</span>`).join('')}<output data-v="delta">Δ —</output></div><div class="ax-delta"><i></i></div>
       <div class="ax-pitwall" role="group" aria-label="Race engineer" hidden></div></section>
-    <div class="ax-feed"><b>${insignia} APEX <i>RACECAST</i></b><span class="ax-camera-id"><i class="ax-live-dot"></i><span data-v="camera"></span></span></div>
+    <div class="ax-feed"><b>${insignia} APEX <i>RACECAST</i></b><span class="ax-camera-id"><i class="ax-live-dot"></i><span data-v="camera"></span></span>
+      <div class="ax-weather-bar" role="group" aria-label="Live weather">${weatherLabels.map(([w, lbl]) => `<button type="button" data-weather="${w}" aria-pressed="false">${lbl}</button>`).join('')}</div>
+      <div class="ax-track-meta"><span data-v="trackMeta">27°C · DRY</span><button type="button" data-action="togglePitMfd" title="Toggle Pit Strategy MFD (P)">PIT MFD</button></div></div>
+    <div class="ax-pit-banner" data-pit-banner hidden><strong data-v="pitBannerTitle">PIT LIMITER 60 KM/H</strong><span data-v="pitBannerSub">PULL INTO BAY 01</span><div class="ax-pit-prog"><i data-pit-prog></i></div></div>
+    <section class="ax-mfd ax-glass" data-mfd hidden aria-label="MoTeC Pit Strategy MFD">
+      <header class="ax-mini-head"><b>MoTeC <em>PIT MFD</em></b><button type="button" data-action="togglePitMfd">ESC / P</button></header>
+      <div class="ax-mfd-row"><span class="ax-micro">NEXT TYRE</span><div class="ax-mfd-btns"><button type="button" data-mfd-compound="soft">SOFT</button><button type="button" data-mfd-compound="medium">MED</button><button type="button" data-mfd-compound="wet">WET</button></div></div>
+      <div class="ax-mfd-row"><span class="ax-micro">REFUEL</span><div class="ax-mfd-btns"><button type="button" data-mfd-fuel="0">+0L</button><button type="button" data-mfd-fuel="20">+20L</button><button type="button" data-mfd-fuel="40">+40L</button><button type="button" data-mfd-fuel="70">+70L</button></div></div>
+      <div class="ax-mfd-row"><span class="ax-micro">SERVICE</span><div class="ax-mfd-btns"><button type="button" data-mfd-toggle="changeTires" aria-pressed="true">TYRES ON</button><button type="button" data-mfd-toggle="repair" aria-pressed="true">REPAIR ON</button></div></div>
+    </section>
     <div class="ax-lights"><div class="ax-lamps">${'<b></b>'.repeat(5)}</div><span class="ax-micro">START PROCEDURE</span></div>
     <div class="ax-radar ax-glass"><header class="ax-mini-head">${icon('map')}<b>TRACK MAP</b><span>VD'O</span></header>${outline.svg}<div class="ax-map-caption"><i></i> YOU <span>• &nbsp; FIELD</span></div></div>
     <details class="ax-dash ax-glass" open><summary class="ax-mini-head" aria-label="Driving telemetry" title="Show or hide driving telemetry"><b>MoTeC <em>C127</em></b><span data-v="hardware"></span>${icon('down')}</summary><div class="ax-shift">${Array.from({ length: 15 }, (_, i) => `<i style="--led:${i < 6 ? '#66e5a0' : i < 11 ? '#ffe063' : '#ff573c'}"></i>`).join('')}</div>
       <div class="ax-readout"><div class="ax-gear"><span>GEAR</span><b data-v="gear">N</b></div><div class="ax-speed"><strong data-v="speed">0</strong><button data-unit title="Switch speed unit" aria-label="Switch speed unit">KM/H</button></div><div class="ax-revs"><b data-v="rpm">0</b><span>RPM</span></div></div>
       <div class="ax-pedals"><label>THR<i><b data-pedal></b></i></label><label>BRK<i><b data-pedal></b></i></label></div>
-      <div class="ax-thermal-head ax-micro"><span>WHEEL TELEMETRY</span><span>TYRE / DISC °C</span></div><div class="ax-thermals">${['FL', 'FR', 'RL', 'RR'].map((w) => `<div class="ax-wheel"><span>${w}</span><b></b><small></small><i><s></s></i></div>`).join('')}</div>
-      <div class="ax-assists"><button data-action="cycleTc" title="Cycle traction control"></button><button data-action="cycleAbs" title="Cycle anti-lock braking"></button><span data-v="surface"></span></div></details>`;
+      <div class="ax-thermal-head ax-micro"><span data-v="compoundMeta">SOFT · FUEL 36L</span><span>TYRE °C / WEAR</span></div><div class="ax-thermals">${['FL', 'FR', 'RL', 'RR'].map((w) => `<div class="ax-wheel"><span>${w}</span><b></b><small></small><i><s></s></i></div>`).join('')}</div>
+      <div class="ax-assists"><button data-action="cycleTc" title="Cycle traction control"></button><button data-action="cycleAbs" title="Cycle anti-lock braking"></button><button data-action="togglePitLimiter" data-pit-lim title="Toggle 60 km/h pit limiter (L)">LIM</button><span data-v="surface"></span></div></details>`;
 
   const pitwall = createPitwall(el.querySelector<HTMLElement>('.ax-pitwall')!, circuit);
   const readouts = Object.fromEntries(
@@ -68,7 +82,7 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
   );
   function write(k: string, v: string) {
     const n = readouts[k];
-    if (n.textContent !== v) n.textContent = v;
+    if (n && n.textContent !== v) n.textContent = v;
   }
   const leds = Array.from(el.querySelectorAll<HTMLElement>('.ax-shift i'));
   const lamps = Array.from(el.querySelectorAll('.ax-lamps b'));
@@ -78,9 +92,20 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     brake: n.querySelector('small')!,
     spring: n.querySelector('s')!,
   }));
+  const weatherBtns = Array.from(el.querySelectorAll<HTMLButtonElement>('[data-weather]'));
+  const mfdEl = el.querySelector<HTMLElement>('[data-mfd]')!;
+  const mfdCompounds = Array.from(el.querySelectorAll<HTMLButtonElement>('[data-mfd-compound]'));
+  const mfdFuels = Array.from(el.querySelectorAll<HTMLButtonElement>('[data-mfd-fuel]'));
+  const mfdTiresBtn = el.querySelector<HTMLButtonElement>('[data-mfd-toggle="changeTires"]')!;
+  const mfdRepairBtn = el.querySelector<HTMLButtonElement>('[data-mfd-toggle="repair"]')!;
+  const pitBanner = el.querySelector<HTMLElement>('[data-pit-banner]')!;
+  const pitProg = el.querySelector<HTMLElement>('[data-pit-prog]')!;
+  const pitLimBtn = el.querySelector<HTMLButtonElement>('[data-pit-lim]')!;
+
   const sectorNodes = Array.from(el.querySelectorAll<HTMLElement>('[data-sector]'));
   const lightPlate = el.querySelector<HTMLElement>('.ax-lights')!;
-  const dash = el.querySelector('details')!, expanded = { cockpit: false, external: true };
+  const dash = el.querySelector('details')!,
+    expanded = { cockpit: false, external: true };
   let instruments: keyof typeof expanded = 'external';
   const tc = el.querySelector<HTMLButtonElement>('[data-action="cycleTc"]')!,
     abs = el.querySelector<HTMLButtonElement>('[data-action="cycleAbs"]')!;
@@ -110,7 +135,7 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     best = [Infinity, Infinity, Infinity];
     previous = best.slice();
   }
-  const timedDistance = (d: Driver) => d.finishTime === null ? d.distance : d.completedLaps * circuit.length;
+  const timedDistance = (d: Driver) => (d.finishTime === null ? d.distance : d.completedLaps * circuit.length);
   function interval(lead: Driver, follow: Driver, elapsed: number) {
     if (follow.finishTime !== null) {
       const laps = lead.completedLaps - follow.completedLaps;
@@ -122,9 +147,13 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     const timestamp = timing.get(lead.id)?.crossing(follow.distance);
     return timestamp == null ? `+${Math.round(m)}m` : `+${Math.max(0, elapsed - timestamp).toFixed(2)}`;
   }
+
   function update(s: RaceState) {
     const player = s.drivers.find((d) => d.id === 0);
-    if (!player) { pitwall.reset(); return; }
+    if (!player) {
+      pitwall.reset();
+      return;
+    }
     const layout = s.camera === 'cockpit' ? 'cockpit' : 'external';
     if (instruments !== layout) {
       expanded[instruments] = dash.open;
@@ -134,6 +163,53 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     if (s.elapsed < lastTime) reset();
     lastTime = s.elapsed;
     pitwall.update(s, player, mph);
+
+    // Sync live 4-weather buttons & surface condition readout
+    for (const b of weatherBtns) b.setAttribute('aria-pressed', String(b.dataset.weather === s.settings.weather));
+    const wetPct = Math.round(s.trackWetness * 100);
+    const wetLabel = wetPct >= 65 ? 'WET' : wetPct >= 15 ? 'DAMP' : 'DRY';
+    write('trackMeta', `${Math.round(s.surfaceTempC)}°C · ${wetLabel}${wetPct >= 15 ? ` ${wetPct}%` : ''}`);
+
+    // Sync MoTeC Pit Strategy MFD
+    mfdEl.hidden = !s.pitMfdOpen;
+    if (s.pitMfdOpen) {
+      for (const b of mfdCompounds)
+        b.setAttribute('aria-pressed', String(b.dataset.mfdCompound === s.pitStrategy.compound));
+      for (const b of mfdFuels)
+        b.setAttribute('aria-pressed', String(Number(b.dataset.mfdFuel) === s.pitStrategy.refuelL));
+      mfdTiresBtn.setAttribute('aria-pressed', String(s.pitStrategy.changeTires));
+      mfdTiresBtn.textContent = s.pitStrategy.changeTires ? 'TYRES ON' : 'TYRES OFF';
+      mfdRepairBtn.setAttribute('aria-pressed', String(s.pitStrategy.repair));
+      mfdRepairBtn.textContent = s.pitStrategy.repair ? 'REPAIR ON' : 'REPAIR OFF';
+    }
+
+    // Live Pit Lane / Air-Jack Service Banner
+    const showPitBanner = player.pitState !== 'track' || player.pitLimiter;
+    pitBanner.hidden = !showPitBanner;
+    if (showPitBanner) {
+      if (player.pitState === 'servicing') {
+        write('pitBannerTitle', `AIR-JACKS ACTIVE · ${player.pitTimer.toFixed(1)} s`);
+        write(
+          'pitBannerSub',
+          `${s.pitStrategy.changeTires ? COMPOUNDS[s.pitStrategy.compound].short : 'HOLD TYRES'} · +${s.pitStrategy.refuelL}L FUEL`,
+        );
+        const pct = player.pitDuration > 0 ? clip(1 - player.pitTimer / player.pitDuration) : 1;
+        pitProg.style.transform = `scaleX(${pct})`;
+      } else if (player.pitState === 'box') {
+        write('pitBannerTitle', 'BAY 01 · STOP FOR AIR-JACKS');
+        write('pitBannerSub', 'BRAKE TO ZERO TO BEGIN PIT STOP');
+        pitProg.style.transform = 'scaleX(0)';
+      } else if (player.pitState === 'exit') {
+        write('pitBannerTitle', 'SERVICE COMPLETE · GO!');
+        write('pitBannerSub', '60 KM/H UNTIL PIT EXIT LINE');
+        pitProg.style.transform = 'scaleX(1)';
+      } else {
+        write('pitBannerTitle', 'PIT LIMITER 60 KM/H');
+        write('pitBannerSub', player.pitState === 'track' ? 'MANUAL LIMITER ENGAGED (L)' : 'PULL INTO BAY 01 ON RIGHT');
+        pitProg.style.transform = 'scaleX(0)';
+      }
+    }
+
     const order = raceOrder(s.drivers);
     for (const d of order) {
       let sensor = timing.get(d.id);
@@ -162,7 +238,14 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
       li.children[0].textContent = String(i + 1);
       num.textContent = d.number;
       name.textContent = d.id === 0 ? 'YOU' : d.name;
-      int.textContent = i ? interval(order[i - 1], d, s.elapsed) : d.finishTime === null ? 'LEADER' : 'FLAG';
+      int.textContent =
+        d.pitState !== 'track'
+          ? 'PIT'
+          : i
+            ? interval(order[i - 1], d, s.elapsed)
+            : d.finishTime === null
+              ? 'LEADER'
+              : 'FLAG';
       let dot = dots.get(d.id);
       if (!dot) {
         dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -192,7 +275,7 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     deltaBar.style.right = s.delta < 0 ? '50%' : 'auto';
     deltaBar.style.background = s.delta >= 0 ? '#efb251' : '#66dda7';
     if (s.lap !== activeLap && s.lastSectors.length) {
-      lastSplitColors = s.lastSectors.map((v, i) => v < best[i] ? 'best' : v < previous[i] ? 'gain' : 'set');
+      lastSplitColors = s.lastSectors.map((v, i) => (v < best[i] ? 'best' : v < previous[i] ? 'gain' : 'set'));
       previous = s.lastSectors;
       best = previous.map((v, i) => Math.min(best[i], v));
     }
@@ -222,22 +305,31 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     write('gear', player.gear < 0 ? 'R' : player.gear === 0 ? 'N' : String(player.gear));
     write('speed', String(Math.round(Math.abs(player.speed) * (mph ? 2.23694 : 3.6))));
     write('rpm', String(Math.round(player.rpm)));
-    leds.forEach((n, i) => n.classList.toggle('on', player.rpm >= 3000 + (i + 1) * 350));
+
+    // Shift LEDs flash alternating pit-limiter blue/amber when 60 km/h limiter is active
+    const limFlash = player.pitLimiter && Math.floor(performance.now() / 180) % 2 === 0;
+    leds.forEach((n, i) => {
+      n.classList.toggle('pit-led', player.pitLimiter);
+      n.classList.toggle('on', player.pitLimiter ? (i % 2 === 0 ? limFlash : !limFlash) : player.rpm >= 3000 + (i + 1) * 350);
+    });
     pedals[0].style.transform = `scaleX(${clip(player.throttle)})`;
     pedals[1].style.transform = `scaleX(${clip(player.brake)})`;
+
+    write('compoundMeta', `${COMPOUNDS[player.compound].short} · FUEL ${player.fuelL.toFixed(1)}L`);
     wheels.forEach((w, i) => {
       const t = player.tireTempC[i] || 0,
-        b = player.brakeTempC[i] || 0;
-      w.tyre.textContent = String(Math.round(t));
-      w.brake.textContent = `/ ${Math.round(b)}`;
-      w.tyre.style.color = t > 110 ? '#ff9668' : t > 65 ? '#92d8a8' : '#a4bacc';
-      w.brake.style.color = b > 650 ? '#ff7556' : b > 350 ? '#e6bd7e' : '';
+        wearPct = Math.round((player.tireWear[i] ?? 1) * 100);
+      w.tyre.textContent = `${Math.round(t)}°`;
+      w.brake.textContent = `${wearPct}%`;
+      w.tyre.style.color = t > 105 ? '#ff9668' : t > 62 ? '#92d8a8' : '#a4bacc';
+      w.brake.style.color = wearPct < 35 ? '#ff7556' : wearPct < 65 ? '#e6bd7e' : '';
       w.spring.style.transform = `scaleX(${clip((player.wheelCompressionM[i] || 0) / 0.16)})`;
     });
     tc.textContent = `TC ${s.tc}`;
     abs.textContent = `ABS ${s.abs}`;
     tc.classList.toggle('intervening', player.tcActive);
     abs.classList.toggle('intervening', player.absActive);
+    pitLimBtn.classList.toggle('intervening', player.pitLimiter);
     write('surface', player.surface.toUpperCase());
   }
   return { update, reset };
