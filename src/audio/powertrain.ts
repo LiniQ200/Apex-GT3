@@ -32,16 +32,21 @@ export function powertrain(g: Graph, mix: AudioNode) {
   const meshWave = g.ctx.createPeriodicWave(new Float32Array(4), new Float32Array([0, 1, 0.19, 0.06]));
   const pinion = g.tone(transmission, meshWave, 350);
 
-  // Persistent transient voices: an ignition cut and exhaust afterfire need no
-  // allocations or timers on the physics/render thread.
+  // Persistent transient voices: an ignition cut, exhaust afterfire, and Concept GT3 turbo flutter
+  // need no allocations or timers on the physics/render thread.
   const thud = g.gain(mix);
   const body = g.tone(thud, 'sine', 80);
   const snap = g.gain(mix);
   g.noise(g.filter(snap, 'bandpass', 1200, 0.65), 0.32);
+  const flutter = g.gain(mix);
+  const flutterFilter = g.filter(flutter, 'bandpass', 2350, 4.2);
+  g.noise(flutterFilter, 0.89);
   let prevGear = 0,
+    prevThrottle = 0,
     lastFueled = -10,
     nextPop = 0,
-    blipEnd = 0;
+    blipEnd = 0,
+    nextFlutter = 0;
 
   return (p: Driver, model: Chassis, cockpit: boolean, now: number, fresh: boolean) => {
     if (model !== chassis) {
@@ -54,12 +59,14 @@ export function powertrain(g: Graph, mix: AudioNode) {
       rev = rpm / 8500;
     if (fresh) {
       prevGear = p.gear;
+      prevThrottle = load;
       lastFueled = -10;
       nextPop = now;
       blipEnd = 0;
+      nextFlutter = now;
       ignition.gain.cancelScheduledValues(now);
       ignition.gain.setValueAtTime(1, now);
-      for (const a of [thud.gain, snap.gain]) {
+      for (const a of [thud.gain, snap.gain, flutter.gain]) {
         a.cancelScheduledValues(now);
         a.setValueAtTime(0, now);
       }
@@ -81,7 +88,25 @@ export function powertrain(g: Graph, mix: AudioNode) {
       pulse(snap.gain, now, 0.2 + load * 0.16, 0.045);
       nextPop = now + 0.15;
     }
+    // Endurance Concept twin-turbo wastegate chirp/flutter on rapid high-RPM throttle lift
+    if (chassis === 'concept' && prevThrottle > 0.55 && load < 0.16 && rpm > 4800 && now >= nextFlutter) {
+      const baseHz = 1950 + rev * 950;
+      flutterFilter.frequency.cancelScheduledValues(now);
+      flutterFilter.frequency.setValueAtTime(baseHz, now);
+      flutterFilter.frequency.exponentialRampToValueAtTime(baseHz * 0.62, now + 0.24);
+      flutter.gain.cancelScheduledValues(now);
+      flutter.gain.setValueAtTime(0, now);
+      for (let k = 0; k < 3; k++) {
+        const t0 = now + k * 0.068;
+        const amp = (cockpit ? 0.09 : 0.13) * (1 - k * 0.26);
+        flutter.gain.linearRampToValueAtTime(amp, t0 + 0.012);
+        flutter.gain.exponentialRampToValueAtTime(0.0005, t0 + 0.062);
+      }
+      flutter.gain.setValueAtTime(0, now + 0.24);
+      nextFlutter = now + 0.36;
+    }
     prevGear = p.gear;
+    prevThrottle = load;
     if (load > 0.44) lastFueled = now;
     if (load < 0.2 && rpm > 3400 && now - lastFueled < 1.05 && now >= nextPop) {
       pulse(snap.gain, now, 0.18 + Math.random() * 0.32, 0.028 + Math.random() * 0.04);

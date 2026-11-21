@@ -236,7 +236,7 @@ export function roadMaterials(scene: Scene, c: Circuit, surfaceGrid?: TrackSurfa
     const wet = w === 'damp' || w === 'rain';
     const rain = w === 'rain';
     const ambWet = weatherBaseWetness[w];
-    const cloudStr = w === 'clear' ? 0.24 : w === 'golden' ? 0.44 : w === 'damp' ? 0.56 : 0.34;
+    const cloudStr = w === 'clear' ? 0.24 : w === 'golden' ? 0.44 : w === 'dusk' ? 0.52 : w === 'damp' ? 0.56 : 0.34;
     roadPlugin.ambientWetness = ambWet;
     roadPlugin.cloudShadowStrength = cloudStr;
     gravelPlugin.ambientWetness = ambWet * 0.85;
@@ -248,13 +248,13 @@ export function roadMaterials(scene: Scene, c: Circuit, surfaceGrid?: TrackSurfa
       hp.cloudShadowStrength = cloudStr;
     }
 
-    // Preserve dry grey stone albedo; PorousSurfacePlugin handles physical Beer-Lambert pore darkening
-    road.albedoColor.setAll(0.92);
-    road.indexOfRefraction = wet ? 1.38 : 1.5;
+    // Preserve sun-weathered mineral stone albedo; PorousSurfacePlugin drives Beer-Lambert darkening & wet Fresnel reflections
+    road.albedoColor.setAll(wet ? 1.04 : 1.24);
+    road.indexOfRefraction = 1.5;
     road.roughness = 1;
-    road.bumpTexture!.level = rain ? 0.56 : wet ? 0.64 : 0.76;
-    kerb.roughness = rain ? 0.38 : wet ? 0.52 : 0.90;
-    paint.roughness = rain ? 0.34 : wet ? 0.46 : 0.74;
+    road.bumpTexture!.level = rain ? 0.44 : wet ? 0.60 : 0.92;
+    kerb.roughness = rain ? 0.18 : wet ? 0.34 : 0.86;
+    paint.roughness = rain ? 0.16 : wet ? 0.32 : 0.70;
     if (grid.syncBytes()) stateTex.update(grid.rgba);
   };
 

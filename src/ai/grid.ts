@@ -94,12 +94,26 @@ export function createPilots(track: Circuit) {
       bend = track.at(d.s + look),
       edge = bend.halfWidth - 1.6,
       clearance = 3.35,
-      opening = clamp((850 - d.distance) / 110, 0, 1),
-      line = opening * plan.startLane + (1 - opening) * clamp(bend.kappa * 125, -2.5, 2.5);
+      opening = clamp((850 - d.distance) / 110, 0, 1);
+    // In Heavy Rain, real GT3 drivers offset slightly off the slick rubbered centerline groove into fresher outer aggregate
+    const wetOffset =
+      opts.weather === 'rain' && opening === 0 && Math.abs(bend.kappa) > 0.0028
+        ? -Math.sign(bend.kappa) * 1.15
+        : 0;
+    const line = clamp(
+      opening * plan.startLane + (1 - opening) * (clamp(bend.kappa * 125, -2.5, 2.5) + wetOffset),
+      -edge,
+      edge,
+    );
     let left = -edge,
       right = edge,
       nearest = Infinity;
     let passing: Driver | undefined;
+    let towTarget: Driver | undefined;
+    let towGap = Infinity;
+    let defendBias = 0;
+    const approachingCorner = track.at(d.s + 68);
+    const inBrakeApproach = Math.abs(approachingCorner.kappa) > 0.0042 && d.speed > 32 && opening === 0;
     for (const r of grid) {
       if (r === d || r.pitState !== 'track') continue;
       const gap = gapTo(d, r),
@@ -107,6 +121,24 @@ export function createPilots(track: Circuit) {
         closing = d.speed - r.speed;
       if (r.id === plan.rival && gap >= -10 && gap < 110) passing = r;
       if (gap > 4.5 && gap < 35 && Math.abs(lateral) < 2.3) draft = Math.max(draft, (35 - gap) / 30);
+      // Hunt aerodynamic tow on straights when 13..34 m behind a car before pulling out to pass
+      if (
+        opening === 0 &&
+        Math.abs(bend.kappa) < 0.0022 &&
+        d.speed > 42 &&
+        gap > 13 &&
+        gap < 34 &&
+        gap < towGap &&
+        Math.abs(lateral) < 3.4 &&
+        r.speed > 34
+      ) {
+        towGap = gap;
+        towTarget = r;
+      }
+      // Fair one-move defensive inside-line positioning when a faster car closes into a braking zone
+      if (inBrakeApproach && gap < -3.5 && gap > -18 && r.speed > d.speed + 1.4 && Math.abs(lateral) < 4.0) {
+        defendBias = Math.sign(approachingCorner.kappa) * 1.35;
+      }
       if (gap > -8 - Math.max(0, -closing) * 0.9 && gap < 7 && Math.abs(lateral) > 0.65) {
         if (lateral > 0) right = Math.min(right, r.d - clearance);
         else left = Math.max(left, r.d + clearance);
@@ -157,7 +189,8 @@ export function createPilots(track: Circuit) {
         }
       }
     }
-    const wanted = passing ? passing.d + plan.side * clearance : line;
+    const baseWanted = towTarget ? towTarget.d : defendBias !== 0 ? clamp(line + defendBias, -edge, edge) : line;
+    const wanted = passing ? passing.d + plan.side * clearance : baseWanted;
     const lane = left <= right ? clamp(wanted, left, right) : clamp(d.d, -edge, edge);
     plan.lane += clamp(lane - plan.lane, -STEP * 3.5, STEP * 3.5);
     const width = 2.35 + Math.min(0.4, d.speed * 0.008);

@@ -358,14 +358,22 @@ export async function createBotanicalForest(scene: Scene) {
 
   let clock = 0;
   function setWeather(w: Weather) {
-    const wind = w === 'rain' ? 0.42 : w === 'damp' ? 0.28 : w === 'golden' ? 0.16 : 0.13;
+    const wind = w === 'rain' ? 0.42 : w === 'damp' ? 0.28 : w === 'dusk' ? 0.17 : w === 'golden' ? 0.16 : 0.13;
     const wet = w === 'rain' ? 0.92 : w === 'damp' ? 0.48 : 0.0;
-    const sss = w === 'golden' ? 0.85 : w === 'clear' ? 0.65 : w === 'damp' ? 0.10 : 0.04;
+    const sss = w === 'golden' ? 0.85 : w === 'dusk' ? 0.72 : w === 'clear' ? 0.65 : w === 'damp' ? 0.10 : 0.04;
     const col: [number, number, number] =
-      w === 'golden' ? [1.0, 0.76, 0.28] : w === 'clear' ? [0.76, 0.96, 0.36] : [0.52, 0.68, 0.48];
+      w === 'dusk'
+        ? [1.05, 0.50, 0.22]
+        : w === 'golden'
+          ? [1.0, 0.76, 0.28]
+          : w === 'clear'
+            ? [0.76, 0.96, 0.36]
+            : [0.52, 0.68, 0.48];
+    const sunDir = scene.metadata?.sunDir as Vector3 | undefined;
     for (const p of plugins) {
       p.windStrength = wind;
       p.wetness = wet;
+      if (sunDir) p.sunDir = [sunDir.x, sunDir.y, sunDir.z];
       if (p !== barkWind) {
         p.sssIntensity = sss;
         p.sssColor = col;

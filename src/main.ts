@@ -144,7 +144,7 @@ async function boot() {
     session.start(skip, wheels);
     await present(token);
   }
-  const weatherOrder: Weather[] = ['clear', 'golden', 'damp', 'rain'];
+  const weatherOrder: Weather[] = ['clear', 'golden', 'dusk', 'damp', 'rain'];
   function applyWeather(w: Weather) {
     if (lifetime.signal.aborted) return;
     s.settings.weather = w;

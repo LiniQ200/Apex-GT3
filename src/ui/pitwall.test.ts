@@ -55,9 +55,9 @@ test('moving the timing line into a bend does not split it or pin the guide to t
 test('braking zone follows approach speed and available grip; no braking for an on-speed entry', () => {
   const e = createEngineer(circuit);
   assert.equal(note(e, 350).cue, 'next');
-  const dry = note(e, 500), damp = note(e, 500, 48, 'damp');
-  assert.equal(dry.cue, 'lift'); assert.equal(damp.cue, 'brake');
-  assert.ok(damp.entrySpeed < dry.entrySpeed);
+  const dry = note(e, 500), damp = note(e, 500, 48, 'damp'), rain = note(e, 500, 48, 'rain'), dusk = note(e, 500, 48, 'dusk');
+  assert.equal(dry.cue, 'lift'); assert.equal(dusk.cue, 'lift'); assert.equal(damp.cue, 'brake'); assert.equal(rain.cue, 'brake');
+  assert.ok(rain.entrySpeed < damp.entrySpeed && damp.entrySpeed < dry.entrySpeed);
   assert.equal(note(e, 540).cue, 'brake');
   assert.equal(note(e, 540, 29).cue, 'next');
   assert.equal(note(e, 646, dry.entrySpeed).cue, 'next');

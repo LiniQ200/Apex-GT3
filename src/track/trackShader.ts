@@ -8,6 +8,7 @@ import type { Scene } from '@babylonjs/core/scene';
 
 class PorousSurfaceDefines extends MaterialDefines {
   POROUS_SURFACE = false;
+  POROUS_ROAD = false;
   POROUS_TRACK_STATE = false;
   POROUS_HEX_BOMB = false;
 }
@@ -28,10 +29,11 @@ float porousNoise(vec2 p) {
   float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
+#ifdef POROUS_ROAD
 // Animated raindrop concentric ripple normal perturbation inside standing asphalt puddles
 vec2 porousRainRipples(vec2 wp, float t) {
-  vec2 cell = floor(wp * 2.2);
-  vec2 f = fract(wp * 2.2) - 0.5;
+  vec2 cell = floor(wp * 2.3);
+  vec2 f = fract(wp * 2.3) - 0.5;
   vec2 rnd = porousHash2(cell);
   float phase = fract(t * 1.15 + rnd.x);
   vec2 center = (rnd - 0.5) * 0.45;
@@ -40,6 +42,8 @@ vec2 porousRainRipples(vec2 wp, float t) {
   float wave = sin((dist - phase * 0.48) * 44.0) * exp(-dist * 7.5) * (1.0 - phase) * smoothstep(0.0, 0.08, phase);
   return (d / dist) * wave;
 }
+#endif
+#ifdef POROUS_HEX_BOMB
 // Fast 2-tap Hex-Grid Stochastic Texture Bombing with analytical derivatives (preserves 16x AF, eliminates tiling)
 vec4 porousHexSample(sampler2D samp, vec2 uv) {
   vec2 duvdx = dFdx(uv);
@@ -64,6 +68,7 @@ vec4 porousHexSample(sampler2D samp, vec2 uv) {
   return textureGrad(samp, uv + porousHash2(oA), duvdx, duvdy) * (pA * inv)
        + textureGrad(samp, uv + porousHash2(oB), duvdx, duvdy) * (pB * inv);
 }
+#endif
 #endif`;
 
 const wgslDefs = `#ifdef POROUS_SURFACE
@@ -84,9 +89,10 @@ fn porousNoise(p: vec2f) -> f32 {
   let d = fract(sin(dot(i + vec2f(1.0, 1.0), vec2f(127.1, 311.7))) * 43758.5453);
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
+#ifdef POROUS_ROAD
 fn porousRainRipples(wp: vec2f, t: f32) -> vec2f {
-  let cell = floor(wp * 2.2);
-  let f = fract(wp * 2.2) - 0.5;
+  let cell = floor(wp * 2.3);
+  let f = fract(wp * 2.3) - 0.5;
   let rnd = porousHash2(cell);
   let phase = fract(t * 1.15 + rnd.x);
   let center = (rnd - 0.5) * 0.45;
@@ -95,6 +101,8 @@ fn porousRainRipples(wp: vec2f, t: f32) -> vec2f {
   let wave = sin((dist - phase * 0.48) * 44.0) * exp(-dist * 7.5) * (1.0 - phase) * smoothstep(0.0, 0.08, phase);
   return (d / dist) * wave;
 }
+#endif
+#ifdef POROUS_HEX_BOMB
 fn porousHexSample(tex: texture_2d<f32>, samp: sampler, uv: vec2f) -> vec4f {
   let duvdx = dpdx(uv);
   let duvdy = dpdy(uv);
@@ -117,10 +125,11 @@ fn porousHexSample(tex: texture_2d<f32>, samp: sampler, uv: vec2f) -> vec4f {
   return textureSampleGrad(tex, samp, uv + porousHash2(oA), duvdx, duvdy) * (pA * inv)
        + textureSampleGrad(tex, samp, uv + porousHash2(oB), duvdx, duvdy) * (pB * inv);
 }
+#endif
 #endif`;
 
-// Apply Beer-Lambert porous water darkening, aggregate micro-sparkle, live rubbering-in,
-// off-line marbles, dynamic drying groove, cloud shadow dappling, and raindrop puddle ripples.
+// Apply Beer-Lambert porous water darkening, crushed-stone micro-aggregate, live rubbering-in,
+// off-line marbles, dynamic drying groove, cloud shadow dappling, and mirror-like raindrop puddles.
 const glslApply = `#ifdef POROUS_SURFACE
 {
   float pWet = porousParams.x;
@@ -136,52 +145,64 @@ const glslApply = `#ifdef POROUS_SURFACE
   pDryGroove = ts.b;
   pMarbles = ts.a;
 #endif
-  float effWet = clamp(pWet * (1.0 - 0.55 * pDryGroove), 0.0, 1.0);
-  // Subtle world-space macro tonal breakup (eliminates repeating asphalt patches at speed)
-  float macroVar = 0.93 + 0.14 * porousNoise(vPositionW.xz * 0.042);
-  float poreDarken = mix(1.0, 0.54, pow(effWet, 0.78));
-  float rubberDarken = mix(1.0, 0.76, pRubber * (1.0 - 0.5 * effWet));
-  float dryLift = 1.0 + 0.24 * pDryGroove * step(0.12, pWet);
-  float marbleSpeck = 1.0 - 0.09 * pMarbles * (0.5 + 0.5 * sin(vPositionW.x * 11.3 + vPositionW.z * 9.7));
-  // Soft cohesive drifting cloud shadows across track & kerbs matching terrain shader
+  float effWet = clamp(pWet * (1.0 - 0.52 * pDryGroove), 0.0, 1.0);
+  float macroVar = 0.87 + 0.26 * porousNoise(vPositionW.xz * 0.036);
+  float fineGrain = 0.88 + 0.24 * porousNoise(vPositionW.xz * 2.8 + vec2(3.1, 7.4));
+  float poreDarken = mix(1.0, 0.36, pow(effWet, 0.72));
+  float rubberDarken = mix(1.0, 0.62, pRubber * (1.0 - 0.45 * effWet));
+  float dryLift = 1.0 + 0.36 * pDryGroove * step(0.10, pWet);
+  float marbleSpeck = 1.0 - 0.16 * pMarbles * (0.5 + 0.5 * sin(vPositionW.x * 13.7 + vPositionW.z * 11.1));
   float cloudField = porousNoise(vPositionW.xz * 0.0028 + vec2(pTime * 0.018, pTime * 0.009));
-  float cloudDapple = mix(1.0, 0.80, smoothstep(0.46, 0.78, cloudField) * pCloud);
-  surfaceAlbedo *= macroVar * poreDarken * rubberDarken * dryLift * marbleSpeck * cloudDapple;
+  float cloudDapple = mix(1.0, 0.78, smoothstep(0.46, 0.78, cloudField) * pCloud);
+  surfaceAlbedo *= macroVar * fineGrain * poreDarken * rubberDarken * dryLift * marbleSpeck * cloudDapple;
 
-  if (porousParams.y > 0.5) {
-    // Crushed-stone micro-aggregate glint on dry/damp tarmac catching low sun
-    vec2 grainCell = floor(vPositionW.xz * 26.0);
-    float grainRnd = porousHash2(grainCell).x;
-    float drySparkle = step(0.92, grainRnd) * (1.0 - effWet * 0.85) * 0.085;
-    surfaceAlbedo += vec3(drySparkle);
+#ifdef POROUS_ROAD
+  vec3 vDir = normalize(vEyePosition.xyz - vPositionW);
+  float ndv = clamp(dot(geometricNormalW, vDir), 0.0, 1.0);
+  float grazing = pow(1.0 - ndv, 2.6);
+  float grainRnd = porousHash2(floor(vPositionW.xz * 30.0)).x;
+  float drySparkle = step(0.87, grainRnd) * (1.0 - effWet * 0.9) * (0.07 + 0.12 * grazing);
+  surfaceAlbedo += vec3(drySparkle);
 
-    float dryRough = clamp(roughness * mix(1.0, 0.88, pRubber), 0.62, 0.94);
-    if (effWet > 0.22) {
-      // Localized standing water pockets using organic low-frequency noise + camber wetness
-      float puddleNoise = porousNoise(vPositionW.xz * 0.11 + vec2(4.1, 8.7));
-      float puddle = smoothstep(0.62, 0.94, effWet + (puddleNoise - 0.46) * 0.28);
-      float wetRough = mix(0.54, 0.30, clamp(effWet * 1.18, 0.0, 1.0));
-      wetRough = mix(wetRough, 0.62, pDryGroove * 0.72);
-      wetRough = mix(wetRough, 0.09, puddle * 0.82); // Standing water puddles reflect crisp sky & brake lights
-      roughness = mix(dryRough, wetRough, smoothstep(0.02, 0.24, pWet));
-      microSurface = 1.0 - roughness;
-      if (puddle > 0.01) {
-        vec3 flatN = normalize(mix(normalW, geometricNormalW, puddle * 0.82));
-        // Add live expanding raindrop concentric ripple rings inside heavy-rain puddles!
-        if (effWet > 0.52) {
-          vec2 rip = porousRainRipples(vPositionW.xz, pTime) * (puddle * smoothstep(0.52, 0.85, effWet) * 0.18);
-          flatN = normalize(flatN + vec3(rip.x, 0.0, rip.y));
-        }
-        normalW = flatN;
-      }
-    } else {
-      roughness = dryRough;
-      microSurface = 1.0 - roughness;
+  float dryRough = clamp(roughness * mix(0.95, 0.74, pRubber) * (0.90 + 0.18 * fineGrain), 0.52, 0.88);
+  if (effWet > 0.12) {
+    float puddleField = porousNoise(vPositionW.xz * 0.072 + vec2(4.1, 8.7)) * 0.78 + (fineGrain - 0.88) * 0.92;
+    float puddle = smoothstep(0.36, 0.72, effWet + (puddleField - 0.44) * 0.44);
+    float wetFilm = smoothstep(0.12, 0.76, effWet);
+    float wetRough = mix(0.28, 0.085, wetFilm);
+    wetRough = mix(wetRough, 0.48, pDryGroove * 0.70);
+    wetRough = mix(wetRough, 0.02, puddle * 0.94);
+    roughness = mix(dryRough, wetRough, smoothstep(0.06, 0.26, pWet));
+    microSurface = 1.0 - roughness;
+    float schlick = pow(1.0 - ndv, 3.6);
+    float waterF0 = mix(0.05, 0.34, clamp(wetFilm * 0.38 + puddle * 0.85, 0.0, 1.0) * (0.45 + 0.55 * schlick));
+    reflectivityOut.reflectanceF0 = max(reflectivityOut.reflectanceF0, waterF0);
+    reflectivityOut.colorReflectanceF0 = max(reflectivityOut.colorReflectanceF0, vec3(waterF0 * 0.96, waterF0, waterF0 * 1.05));
+    float flatAmt = clamp(wetFilm * 0.54 + puddle * 0.42, 0.0, 0.96);
+    vec3 flatN = normalize(mix(normalW, geometricNormalW, flatAmt));
+    float rippleHighlight = 0.0;
+    if (puddle > 0.02 && effWet > 0.38) {
+      vec2 rip = porousRainRipples(vPositionW.xz, pTime) * (puddle * smoothstep(0.38, 0.78, effWet) * 0.24);
+      flatN = normalize(flatN + vec3(rip.x, 0.0, rip.y));
+      rippleHighlight = length(rip) * 0.36;
     }
+    normalW = flatN;
+    float skyMirror = puddle * schlick * smoothstep(0.20, 0.72, effWet) * (0.11 + rippleHighlight);
+    surfaceAlbedo += vec3(0.46, 0.51, 0.58) * skyMirror;
   } else {
-    roughness = clamp(mix(roughness, max(0.44, roughness * 0.72), effWet), 0.40, 0.98);
+    roughness = dryRough;
     microSurface = 1.0 - roughness;
   }
+#else
+  float sideWet = smoothstep(0.10, 0.85, effWet);
+  roughness = clamp(mix(roughness, mix(0.42, 0.14, sideWet), effWet), 0.14, 0.96);
+  microSurface = 1.0 - roughness;
+  if (sideWet > 0.1) {
+    float sideF0 = mix(0.04, 0.10, sideWet);
+    reflectivityOut.reflectanceF0 = max(reflectivityOut.reflectanceF0, sideF0);
+    reflectivityOut.colorReflectanceF0 = max(reflectivityOut.colorReflectanceF0, vec3(sideF0));
+  }
+#endif
 }
 #endif
 #include<pbrBlockGeometryInfo>`;
@@ -201,47 +222,64 @@ const wgslApply = `#ifdef POROUS_SURFACE
   pDryGroove = ts.b;
   pMarbles = ts.a;
 #endif
-  let effWet = clamp(pWet * (1.0 - 0.55 * pDryGroove), 0.0, 1.0);
-  let macroVar = 0.93 + 0.14 * porousNoise(input.vPositionW.xz * 0.042);
-  let poreDarken = mix(1.0, 0.54, pow(effWet, 0.78));
-  let rubberDarken = mix(1.0, 0.76, pRubber * (1.0 - 0.5 * effWet));
-  let dryLift = 1.0 + 0.24 * pDryGroove * step(0.12, pWet);
-  let marbleSpeck = 1.0 - 0.09 * pMarbles * (0.5 + 0.5 * sin(input.vPositionW.x * 11.3 + input.vPositionW.z * 9.7));
+  let effWet = clamp(pWet * (1.0 - 0.52 * pDryGroove), 0.0, 1.0);
+  let macroVar = 0.87 + 0.26 * porousNoise(input.vPositionW.xz * 0.036);
+  let fineGrain = 0.88 + 0.24 * porousNoise(input.vPositionW.xz * 2.8 + vec2f(3.1, 7.4));
+  let poreDarken = mix(1.0, 0.36, pow(effWet, 0.72));
+  let rubberDarken = mix(1.0, 0.62, pRubber * (1.0 - 0.45 * effWet));
+  let dryLift = 1.0 + 0.36 * pDryGroove * step(0.10, pWet);
+  let marbleSpeck = 1.0 - 0.16 * pMarbles * (0.5 + 0.5 * sin(input.vPositionW.x * 13.7 + input.vPositionW.z * 11.1));
   let cloudField = porousNoise(input.vPositionW.xz * 0.0028 + vec2f(pTime * 0.018, pTime * 0.009));
-  let cloudDapple = mix(1.0, 0.80, smoothstep(0.46, 0.78, cloudField) * pCloud);
-  surfaceAlbedo *= macroVar * poreDarken * rubberDarken * dryLift * marbleSpeck * cloudDapple;
+  let cloudDapple = mix(1.0, 0.78, smoothstep(0.46, 0.78, cloudField) * pCloud);
+  surfaceAlbedo *= macroVar * fineGrain * poreDarken * rubberDarken * dryLift * marbleSpeck * cloudDapple;
 
-  if (uniforms.porousParams.y > 0.5) {
-    let grainCell = floor(input.vPositionW.xz * 26.0);
-    let grainRnd = porousHash2(grainCell).x;
-    let drySparkle = step(0.92, grainRnd) * (1.0 - effWet * 0.85) * 0.085;
-    surfaceAlbedo += vec3f(drySparkle);
+#ifdef POROUS_ROAD
+  let vDir = normalize(scene.vEyePosition.xyz - input.vPositionW);
+  let ndv = clamp(dot(geometricNormalW, vDir), 0.0, 1.0);
+  let grazing = pow(1.0 - ndv, 2.6);
+  let grainRnd = porousHash2(floor(input.vPositionW.xz * 30.0)).x;
+  let drySparkle = step(0.87, grainRnd) * (1.0 - effWet * 0.9) * (0.07 + 0.12 * grazing);
+  surfaceAlbedo += vec3f(drySparkle);
 
-    let dryRough = clamp(roughness * mix(1.0, 0.88, pRubber), 0.62, 0.94);
-    if (effWet > 0.22) {
-      let puddleNoise = porousNoise(input.vPositionW.xz * 0.11 + vec2f(4.1, 8.7));
-      let puddle = smoothstep(0.62, 0.94, effWet + (puddleNoise - 0.46) * 0.28);
-      var wetRough = mix(0.54, 0.30, clamp(effWet * 1.18, 0.0, 1.0));
-      wetRough = mix(wetRough, 0.62, pDryGroove * 0.72);
-      wetRough = mix(wetRough, 0.09, puddle * 0.82);
-      roughness = mix(dryRough, wetRough, smoothstep(0.02, 0.24, pWet));
-      microSurface = 1.0 - roughness;
-      if (puddle > 0.01) {
-        var flatN = normalize(mix(normalW, geometricNormalW, puddle * 0.82));
-        if (effWet > 0.52) {
-          let rip = porousRainRipples(input.vPositionW.xz, pTime) * (puddle * smoothstep(0.52, 0.85, effWet) * 0.18);
-          flatN = normalize(flatN + vec3f(rip.x, 0.0, rip.y));
-        }
-        normalW = flatN;
-      }
-    } else {
-      roughness = dryRough;
-      microSurface = 1.0 - roughness;
+  let dryRough = clamp(roughness * mix(0.95, 0.74, pRubber) * (0.90 + 0.18 * fineGrain), 0.52, 0.88);
+  if (effWet > 0.12) {
+    let puddleField = porousNoise(input.vPositionW.xz * 0.072 + vec2f(4.1, 8.7)) * 0.78 + (fineGrain - 0.88) * 0.92;
+    let puddle = smoothstep(0.36, 0.72, effWet + (puddleField - 0.44) * 0.44);
+    let wetFilm = smoothstep(0.12, 0.76, effWet);
+    var wetRough = mix(0.28, 0.085, wetFilm);
+    wetRough = mix(wetRough, 0.48, pDryGroove * 0.70);
+    wetRough = mix(wetRough, 0.02, puddle * 0.94);
+    roughness = mix(dryRough, wetRough, smoothstep(0.06, 0.26, pWet));
+    microSurface = 1.0 - roughness;
+    let schlick = pow(1.0 - ndv, 3.6);
+    let waterF0 = mix(0.05, 0.34, clamp(wetFilm * 0.38 + puddle * 0.85, 0.0, 1.0) * (0.45 + 0.55 * schlick));
+    reflectivityOut.reflectanceF0 = max(reflectivityOut.reflectanceF0, waterF0);
+    reflectivityOut.colorReflectanceF0 = max(reflectivityOut.colorReflectanceF0, vec3f(waterF0 * 0.96, waterF0, waterF0 * 1.05));
+    let flatAmt = clamp(wetFilm * 0.54 + puddle * 0.42, 0.0, 0.96);
+    var flatN = normalize(mix(normalW, geometricNormalW, flatAmt));
+    var rippleHighlight: f32 = 0.0;
+    if (puddle > 0.02 && effWet > 0.38) {
+      let rip = porousRainRipples(input.vPositionW.xz, pTime) * (puddle * smoothstep(0.38, 0.78, effWet) * 0.24);
+      flatN = normalize(flatN + vec3f(rip.x, 0.0, rip.y));
+      rippleHighlight = length(rip) * 0.36;
     }
+    normalW = flatN;
+    let skyMirror = puddle * schlick * smoothstep(0.20, 0.72, effWet) * (0.11 + rippleHighlight);
+    surfaceAlbedo += vec3f(0.46, 0.51, 0.58) * skyMirror;
   } else {
-    roughness = clamp(mix(roughness, max(0.44, roughness * 0.72), effWet), 0.40, 0.98);
+    roughness = dryRough;
     microSurface = 1.0 - roughness;
   }
+#else
+  let sideWet = smoothstep(0.10, 0.85, effWet);
+  roughness = clamp(mix(roughness, mix(0.42, 0.14, sideWet), effWet), 0.14, 0.96);
+  microSurface = 1.0 - roughness;
+  if (sideWet > 0.1) {
+    let sideF0 = mix(0.04, 0.10, sideWet);
+    reflectivityOut.reflectanceF0 = max(reflectivityOut.reflectanceF0, sideF0);
+    reflectivityOut.colorReflectanceF0 = max(reflectivityOut.colorReflectanceF0, vec3f(sideF0));
+  }
+#endif
 }
 #endif
 #include<pbrBlockGeometryInfo>`;
@@ -275,6 +313,7 @@ export class PorousSurfacePlugin extends MaterialPluginBase {
 
   override prepareDefines(defines: PorousSurfaceDefines) {
     defines.POROUS_SURFACE = true;
+    defines.POROUS_ROAD = this.isRoad;
     defines.POROUS_TRACK_STATE = Boolean(this.isRoad && this.trackStateTexture);
     defines.POROUS_HEX_BOMB = this.hexBomb;
   }

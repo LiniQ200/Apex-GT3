@@ -1,5 +1,5 @@
 import type Jolt from 'jolt-physics/wasm-compat';
-import type { Circuit, CollisionMesh, Driver, RaceState, TireCompound, Weather, WheelLayout } from '../types';
+import type { Circuit, CollisionMesh, Driver, RaceState, Settings, TireCompound, Weather, WheelLayout } from '../types';
 import { PIT_SPEED_LIMIT_MS } from '../track/circuit';
 import { TrackSurfaceGrid, type SurfaceSample } from '../track/surfaceState';
 import { COMPOUNDS, computeWheelGrip } from './tires';
@@ -57,6 +57,10 @@ interface Car {
   speed: number;
   prevSpeed: number;
   weather: Weather;
+  chassis: Settings['chassis'];
+  upshiftRpm: number;
+  aeroScale: number;
+  dragScale: number;
 }
 
 const drySample: SurfaceSample = { wetness: 0, rubberGrip: 0.35, dryingGroove: 0, marbles: 0 };
@@ -161,7 +165,14 @@ export async function createWorld(
     d.steer = 0;
   }
 
-  function add(d: Driver, s: number, lateral: number, layout: WheelLayout = referenceLayout) {
+  function add(
+    d: Driver,
+    s: number,
+    lateral: number,
+    layout: WheelLayout = referenceLayout,
+    chassis: Settings['chassis'] = '458',
+    setup?: { aeroWing?: Settings['aeroWing']; brakeBias?: Settings['brakeBias'] },
+  ) {
     pose(d, s, lateral);
     v.Set(0.91, 0.2, 2.11);
     const box = new j.BoxShapeSettings(v, 0.08);
@@ -174,6 +185,9 @@ export async function createWorld(
       vs = new j.VehicleConstraintSettings();
     const tangent = Math.min(...layout.map((h) => h.y - h.radius)),
       springLengths: number[] = [];
+    const bias = setup?.brakeBias ?? '57';
+    const frontBrakeNm = bias === '54' ? 3450 : bias === '60' ? 3950 : 3700;
+    const rearBrakeNm = bias === '54' ? 2800 : bias === '60' ? 2300 : 2550;
     vs.mMaxPitchRollAngle = 0.68;
     for (let i = 0; i < 4; i++) {
       const front = i < 2,
@@ -194,7 +208,7 @@ export async function createWorld(
       w.mSuspensionSpring.mFrequency = front ? 2.85 : 3.1;
       w.mSuspensionSpring.mDamping = 0.7;
       w.mInertia *= radiusScale * radiusScale;
-      w.mMaxBrakeTorque = (front ? 3700 : 2550) * radiusScale;
+      w.mMaxBrakeTorque = (front ? frontBrakeNm : rearBrakeNm) * radiusScale;
       w.mMaxHandBrakeTorque = (front ? 0 : 3300) * radiusScale;
       for (const [curve, knee] of [
         [w.mLongitudinalFriction, 0.11],
@@ -207,19 +221,28 @@ export async function createWorld(
       }
       vs.mWheels.push_back(w);
     }
+    const isConcept = chassis === 'concept';
     const cs = new j.WheeledVehicleControllerSettings();
     vs.mController = cs;
-    cs.mEngine.mMaxTorque = 665;
+    // FIA GT3 Balance of Performance: 458 NA V8 revs higher; Concept Endurance Twin-Turbo Flat-6 hits harder mid-range
+    cs.mEngine.mMaxTorque = isConcept ? 688 : 665;
     cs.mEngine.mMinRPM = 1650;
-    cs.mEngine.mMaxRPM = 8500;
+    cs.mEngine.mMaxRPM = isConcept ? 8350 : 8500;
     cs.mEngine.mNormalizedTorque.Clear();
-    for (const [x, y] of [
-      [0, 0.64],
-      [0.32, 0.86],
-      [0.72, 1],
-      [1, 0.88],
-    ])
-      cs.mEngine.mNormalizedTorque.AddPoint(x, y);
+    const torqueCurve = isConcept
+      ? [
+          [0, 0.72],
+          [0.34, 0.96],
+          [0.64, 1.0],
+          [1, 0.80],
+        ]
+      : [
+          [0, 0.64],
+          [0.32, 0.86],
+          [0.72, 1],
+          [1, 0.88],
+        ];
+    for (const [x, y] of torqueCurve) cs.mEngine.mNormalizedTorque.AddPoint(x, y);
     const tr = cs.mTransmission;
     tr.mMode = j.ETransmissionMode_Manual;
     tr.mSwitchTime = 0.045; // Crisp 45 ms GT3 sequential flat-shift ignition cut
@@ -278,6 +301,10 @@ export async function createWorld(
       speed: 0,
       prevSpeed: 0,
       weather: 'golden',
+      chassis,
+      upshiftRpm: isConcept ? 7920 : 8080,
+      aeroScale: (isConcept ? 1.05 : 1.0) * (setup?.aeroWing === 'high' ? 1.16 : setup?.aeroWing === 'low' ? 0.86 : 1.0),
+      dragScale: setup?.aeroWing === 'high' ? 1.12 : setup?.aeroWing === 'low' ? 0.89 : 1.0,
     };
 
     // Per-wheel 120 Hz Pacejka + 3-compound + live TrackSurfaceGrid friction callback
@@ -382,7 +409,7 @@ export async function createWorld(
 
     const automatic = d.id !== 0 || state.autopilot || state.settings.transmission === 'auto';
     if (automatic) {
-      if (d.rpm > 8080) shift(d, 1);
+      if (d.rpm > c.upshiftRpm) shift(d, 1);
       else if (d.rpm < 4590 && d.gear > 1) shift(d, -1);
     }
     c.shiftCut = Math.max(0, c.shiftCut - STEP);
@@ -435,9 +462,10 @@ export async function createWorld(
     // Pitch-sensitive GT3 ground-effect aero: nose-down braking increases front splitter downforce
     const pitchBoost = 1 + clamp(-d.pitch * 3.2, -0.08, 0.14);
     const aeroIntegrity = 1 - 0.22 * clamp(d.damage, 0, 1);
-    const down = 0.5 * 1.225 * 3.65 * speed * speed * pitchBoost * aeroIntegrity;
+    const down = 0.5 * 1.225 * 3.65 * c.aeroScale * speed * speed * pitchBoost * aeroIntegrity;
     const drag =
-      0.5 * 1.225 * (0.72 + 0.12 * d.damage) * speed * speed * (1 - input.draft * 0.23) + c.gravelShare * 1000;
+      0.5 * 1.225 * (0.72 * c.dragScale + 0.12 * d.damage) * speed * speed * (1 - input.draft * 0.23) +
+      c.gravelShare * 1000;
     const velocity = c.body.GetLinearVelocity(),
       ratio = drag / Math.max(1, speed);
     v.Set(-velocity.GetX() * ratio, -down, -velocity.GetZ() * ratio);

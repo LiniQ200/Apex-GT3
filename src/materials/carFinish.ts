@@ -240,44 +240,44 @@ function sharedMaterials(scene: Scene) {
   glass.forceDepthWrite = true;
   const headlight = pbr(scene, 'projector arrays', '#f0f9ff', 0.2, 0.16);
   headlight.emissiveColor.set(1.75, 1.83, 2.05);
-  const tire = pbr(scene, 'vulcanized slick', '#202124', 0, 0.82);
-  const rim = pbr(scene, 'forged magnesium', '#8e949a', 0.83, 0.27);
+  const tire = pbr(scene, 'vulcanized slick', '#1c1d20', 0, 0.78);
+  const rim = pbr(scene, 'forged magnesium', '#98a0a8', 0.90, 0.19);
   rim.anisotropy.isEnabled = true;
-  rim.anisotropy.intensity = 0.48;
+  rim.anisotropy.intensity = 0.56;
   // Babylon 9.0's clustered anisotropic lighting reads the clearcoat response.
   rim.clearCoat.isEnabled = true;
-  rim.clearCoat.intensity = 0.24;
-  rim.clearCoat.roughness = 0.23;
-  const caliper = pbr(scene, 'ceramic caliper', '#ce9b38', 0.56, 0.31),
-    badge = pbr(scene, 'enamel crest', '#dbb438', 0.44, 0.26);
-  const carbon = pbr(scene, '2x2 twill', '#ffffff', 0.46, 0.34);
+  rim.clearCoat.intensity = 0.34;
+  rim.clearCoat.roughness = 0.14;
+  const caliper = pbr(scene, 'ceramic caliper', '#d9a12e', 0.65, 0.20),
+    badge = pbr(scene, 'enamel crest', '#e4bc3b', 0.48, 0.22);
+  const carbon = pbr(scene, '2x2 twill', '#ffffff', 0.50, 0.18);
   const weave = canvasMap(scene, 'carbon.2x2', 128, 128, (c) => {
-    c.fillStyle = '#24292b';
+    c.fillStyle = '#1b2022';
     c.fillRect(0, 0, 128, 128);
     for (let y = 0; y < 16; y++)
       for (let x = 0; x < 16; x++) {
         const a = (x + y) % 4 < 2;
-        c.fillStyle = a ? '#414748' : '#34393c';
+        c.fillStyle = a ? '#41494d' : '#282e31';
         c.fillRect(x * 8, y * 8, 8, 8);
-        c.fillStyle = a ? '#4a4e50' : '#242a2c';
+        c.fillStyle = a ? '#52595d' : '#181c1e';
         for (let j = 0; j < 4; j++)
           if (a) c.fillRect(x * 8 + j * 2, y * 8, 1, 8);
           else c.fillRect(x * 8, y * 8 + j * 2, 8, 1);
       }
   });
-  weave.uScale = 4;
-  weave.vScale = 4;
+  weave.uScale = 5;
+  weave.vScale = 5;
   carbon.albedoTexture = weave;
   carbon.backFaceCulling = false;
-  const foil = pbr(scene, 'carbon mainplane', '#ffffff', 0.42, 0.34);
+  const foil = pbr(scene, 'carbon mainplane', '#ffffff', 0.46, 0.20);
   foil.albedoTexture = canvasMap(scene, 'rear wing stencil', 1024, 256, (c) => {
-    c.fillStyle = '#272c2e';
+    c.fillStyle = '#202528';
     c.fillRect(0, 0, 1024, 256);
-    for (let i = -260; i < 1024; i += 8) poly(c, '#2e3437', i, 0, i + 3, 0, i + 259, 256, i + 256, 256);
-    type(c, 'A P E X    R A C I N G', 512, 165, 78, '#dfdfd5', 'italic 900', 'center');
+    for (let i = -260; i < 1024; i += 8) poly(c, '#2b3236', i, 0, i + 3, 0, i + 259, 256, i + 256, 256);
+    type(c, 'A P E X    R A C I N G', 512, 165, 78, '#ecece2', 'italic 900', 'center');
     for (const x of [55, 918]) {
-      poly(c, '#dbb556', x, 87, x + 12, 87, x - 9, 168, x - 21, 168);
-      poly(c, '#dfdfd5', x + 21, 87, x + 32, 87, x + 11, 168, x - 1, 168);
+      poly(c, '#e2ba56', x, 87, x + 12, 87, x - 9, 168, x - 21, 168);
+      poly(c, '#ecece2', x + 21, 87, x + 32, 87, x + 11, 168, x - 1, 168);
     }
   });
   foil.backFaceCulling = false;
@@ -306,10 +306,10 @@ function sharedMaterials(scene: Scene) {
     c.fill();
   });
   const flame = pbr(scene, 'exhaust mantle', '#ffad47', 0, 0.8);
-  flame.emissiveColor.set(3.5, 1, 0.09);
+  flame.emissiveColor.set(3.8, 1.1, 0.10);
   flame.unlit = false;
   const core = pbr(scene, 'exhaust inner cone', '#84bbff', 0, 0.8);
-  core.emissiveColor.set(0.6, 1.7, 4);
+  core.emissiveColor.set(0.65, 1.85, 4.4);
   const surfaces = { trim, metal, tire, rim, caliper, badge, carbon, foil };
   const hardware = pbr(scene, 'race hardware', '#ffffff', 1, 1);
   const strip = (name: string, color: (s: (typeof hardwareSlots)[number]) => string) => {
@@ -324,7 +324,7 @@ function sharedMaterials(scene: Scene) {
     return t;
   };
   hardware.albedoTexture = strip('hardware finishes', (s) =>
-    s === 'carbon' || s === 'foil' ? '#34393b' : surfaces[s].albedoColor.toGammaSpace().toHexString(),
+    s === 'carbon' || s === 'foil' ? '#2c3235' : surfaces[s].albedoColor.toGammaSpace().toHexString(),
   );
   hardware.metallicTexture = strip('hardware roughness and metalness', (s) => {
     const m = surfaces[s];
@@ -351,6 +351,8 @@ export function setCarPaintWetness(scene: Scene, wetness: number) {
   const bank = banks.get(scene);
   if (!bank) return;
   for (const p of bank.paintPlugins.values()) p.wetness = wetness;
+  // Wet tires glisten under damp/heavy-rain skies without extra shader permutations
+  bank.common.tire.roughness = 0.78 - wetness * 0.56;
 }
 export function carFinish(scene: Scene, idx: number, number: string) {
   let bank = banks.get(scene);
@@ -368,12 +370,12 @@ export function carFinish(scene: Scene, idx: number, number: string) {
     team = teams[k];
   let paint = bank.paint.get(k);
   if (!paint) {
-    paint = pbr(scene, team[1], '#ffffff', 0.50, 0.24);
+    paint = pbr(scene, team[1], '#ffffff', 0.52, 0.22);
     paint.albedoTexture = paintAtlas(scene, k);
     paint.clearCoat.isEnabled = true;
     paint.clearCoat.intensity = 1;
-    paint.clearCoat.roughness = 0.025;
-    paint.clearCoat.indexOfRefraction = 1.52;
+    paint.clearCoat.roughness = 0.02;
+    paint.clearCoat.indexOfRefraction = 1.54;
     bank.paintPlugins.set(k, new CarFinishShaderPlugin(paint));
     bank.paint.set(k, paint);
   }
@@ -399,14 +401,14 @@ export function contactShadow(scene: Scene, s: Studio, footprint: { width: numbe
       c.scale((rx * pix) / w, (ry * 512) / h);
       const g = c.createRadialGradient(0, 0, 0, 0, 0, 1);
       g.addColorStop(0, `rgba(0,0,0,${opacity})`);
-      g.addColorStop(0.52, `rgba(0,0,0,${opacity * 0.78})`);
+      g.addColorStop(0.58, `rgba(0,0,0,${opacity * 0.84})`);
       g.addColorStop(1, 'rgba(0,0,0,0)');
       c.fillStyle = g;
       c.fillRect(-1, -1, 2, 2);
       c.restore();
     };
-    ellipse(0, 0, s.fit.width * 0.56, s.fit.length * 0.52, 0.74);
-    s.hubs.forEach((p, i) => ellipse(p.x, p.z, s.tireWidths[i] * 0.5 + 0.18, s.radii[i] + 0.10, 0.90));
+    ellipse(0, 0, s.fit.width * 0.58, s.fit.length * 0.53, 0.86);
+    s.hubs.forEach((p, i) => ellipse(p.x, p.z, s.tireWidths[i] * 0.5 + 0.19, s.radii[i] + 0.11, 0.96));
   });
   map.hasAlpha = true;
   m = new StandardMaterial('contact attenuation ' + s.source, scene);

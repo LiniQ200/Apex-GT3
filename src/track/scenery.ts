@@ -8,6 +8,7 @@ import '@babylonjs/core/Meshes/thinInstanceMesh';
 import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import type { Circuit, Weather } from '../types';
@@ -509,7 +510,31 @@ export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<ty
     if (i % 2 === 0) props.placeProp('pit_crate', [21.5, 0, z - 2.2], i * 0.5);
     if (i % 4 === 2) props.placeProp('toolbox', [21.1, 0, z + 5.1], -Math.PI * 0.4);
   }
+  const pitGlowGeom = geometry();
+  for (let i = 0; i < 16; i++) {
+    const z = -42 + i * 16.0;
+    const b = pitGlowGeom.positions.length / 3;
+    // Recessed warm halogen garage ceiling strip visible through each open pit bay
+    vertex(pitGlowGeom, [22.65, 3.35, z - 4.4], [0, 0]);
+    vertex(pitGlowGeom, [22.65, 3.35, z + 4.4], [1, 0]);
+    vertex(pitGlowGeom, [22.65, 3.85, z + 4.4], [1, 1]);
+    vertex(pitGlowGeom, [22.65, 3.85, z - 4.4], [0, 1]);
+    quad(pitGlowGeom, b, b + 1, b + 2, b + 3);
+  }
+  const pitGlowMat = new StandardMaterial('venue.pitGlow', scene);
+  pitGlowMat.disableLighting = true;
+  pitGlowMat.diffuseColor = Color3.Black();
+  pitGlowMat.specularColor = Color3.Black();
+  pitGlowMat.emissiveColor = new Color3(0.22, 0.17, 0.11);
+  pitGlowMat.backFaceCulling = false;
+  publish(scene, 'venue.pitGarageGlow', pitGlowGeom, pitGlowMat, false).receiveShadows = false;
+
   // FIA Glass-Fronted Race Control & Timing Tower at Pit Exit (s=224, d=24.2)
+  const glassMat = plain(scene, 'raceControlGlass', 0.08, 0.78);
+  glassMat.albedoColor = Color3.FromHexString('#182a34').toLinearSpace();
+  glassMat.clearCoat.isEnabled = true;
+  glassMat.clearCoat.intensity = 1.0;
+  glassMat.clearCoat.roughness = 0.04;
   {
     const tcPos = c.at(224, 24.4);
     const towerConcrete = geometry();
@@ -536,11 +561,6 @@ export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<ty
     // Tinted panoramic architectural glass around the race-control observation deck
     addBoxGeom(towerGlass, tcPos.x - 1.0, 11.2, tcPos.z, 9.8, 3.8, 10.8);
     publish(scene, 'venue.raceControlTower', towerConcrete, mats.concrete, true);
-    const glassMat = plain(scene, 'raceControlGlass', 0.08, 0.78);
-    glassMat.albedoColor = Color3.FromHexString('#182a34').toLinearSpace();
-    glassMat.clearCoat.isEnabled = true;
-    glassMat.clearCoat.intensity = 1.0;
-    glassMat.clearCoat.roughness = 0.04;
     publish(scene, 'venue.raceControlGlass', towerGlass, glassMat, false);
     // Illuminated VDO lap-record timing pylon facing oncoming straight traffic!
     panel('tower', [tcPos.x - 4.05, 8.8, tcPos.z - 5.2], 3.4, 7.2, 0);
@@ -772,6 +792,7 @@ export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<ty
   }
 
   // Stadium Floodlight Towers (Blender tapered tubular masts + 4-head LED banks)
+  const floodLamps = geometry();
   for (let i = 0; i < 26; i++) {
     const s = i < 7 ? -42 + i * 48 : 350 + (i - 7) * 205,
       side = i % 2 ? -1 : 1,
@@ -779,8 +800,36 @@ export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<ty
       off = side * (s < 310 ? (side > 0 ? 39 : 36) : wallOffset(p, side, c.length) + 4.5);
     const v = point(p, off),
       y = Math.max(v[1], floor(v[0], v[2]));
-    kit.placeKit('FloodlightTower', [v[0], y, v[2]], p.yaw + (side < 0 ? Math.PI : 0));
+    const yaw = p.yaw + (side < 0 ? Math.PI : 0);
+    kit.placeKit('FloodlightTower', [v[0], y, v[2]], yaw);
+    // Add glowing LED lens bank facing the circuit at the 15.05m masthead
+    const sn = Math.sin(yaw),
+      cs = Math.cos(yaw);
+    const b = floodLamps.positions.length / 3;
+    const lx = -0.52;
+    const hw = 1.72,
+      hh = 0.28;
+    for (const [lz, ly] of [
+      [-hw, -hh],
+      [hw, -hh],
+      [hw, hh],
+      [-hw, hh],
+    ]) {
+      vertex(
+        floodLamps,
+        [v[0] + lx * cs + lz * sn, y + 15.05 + ly, v[2] - lx * sn + lz * cs],
+        [0.5, 0.5],
+      );
+    }
+    quad(floodLamps, b, b + 1, b + 2, b + 3);
   }
+  const floodLampMat = new StandardMaterial('venue.floodlightLamps', scene);
+  floodLampMat.disableLighting = true;
+  floodLampMat.diffuseColor = Color3.Black();
+  floodLampMat.specularColor = Color3.Black();
+  floodLampMat.emissiveColor = new Color3(0.14, 0.16, 0.19);
+  floodLampMat.backFaceCulling = false;
+  publish(scene, 'venue.floodlightLamps', floodLamps, floodLampMat, false).receiveShadows = false;
 
   // Trackside Corner Grandstands (Blender space-frame bays)
   for (const s of [734, 1668, 2488, 2900, 3970]) {
@@ -1036,8 +1085,26 @@ export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<ty
       if (w === 'rain') flagLedMat.emissiveColor.set(1.65, 0.92, 0.06);
       else if (w === 'damp') flagLedMat.emissiveColor.set(0.75, 1.25, 0.14);
       else flagLedMat.emissiveColor.set(0.08, 1.45, 0.28);
-      flagPlugin.amplitude = w === 'rain' ? 0.36 : w === 'damp' ? 0.26 : 0.18;
-      flagPlugin.speed = w === 'rain' ? 9.2 : w === 'damp' ? 6.8 : 4.8;
+      // Stadium floodlight LED arrays, pit garage halogen bays & Race Control glass glow in low light
+      if (w === 'dusk') {
+        floodLampMat.emissiveColor.set(3.8, 3.55, 3.1);
+        pitGlowMat.emissiveColor.set(2.4, 1.85, 1.15);
+        glassMat.emissiveColor.set(0.42, 0.34, 0.22);
+      } else if (w === 'rain') {
+        floodLampMat.emissiveColor.set(2.9, 3.15, 3.5);
+        pitGlowMat.emissiveColor.set(1.9, 1.65, 1.25);
+        glassMat.emissiveColor.set(0.28, 0.30, 0.34);
+      } else if (w === 'damp') {
+        floodLampMat.emissiveColor.set(1.35, 1.45, 1.6);
+        pitGlowMat.emissiveColor.set(0.85, 0.72, 0.52);
+        glassMat.emissiveColor.set(0.12, 0.14, 0.16);
+      } else {
+        floodLampMat.emissiveColor.set(0.06, 0.07, 0.08);
+        pitGlowMat.emissiveColor.set(0.16, 0.13, 0.08);
+        glassMat.emissiveColor.set(0, 0, 0);
+      }
+      flagPlugin.amplitude = w === 'rain' ? 0.36 : w === 'damp' ? 0.26 : w === 'dusk' ? 0.20 : 0.18;
+      flagPlugin.speed = w === 'rain' ? 9.2 : w === 'damp' ? 6.8 : w === 'dusk' ? 5.2 : 4.8;
       forest.setWeather(w);
     },
     update(dt: number) {

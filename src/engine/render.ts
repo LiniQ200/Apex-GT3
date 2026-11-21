@@ -131,6 +131,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, reason = '') {
   };
   try {
     const scene = new DrivingScene(engine);
+    if (software) scene.onReadyTimeoutDuration = 240_000;
     scene.clearColor = new Color4(0.28, 0.36, 0.44, 1);
     scene.skipPointerMovePicking = true;
     const brdf = GetEnvironmentBRDFTexture(scene);
@@ -163,6 +164,7 @@ interface BakedSky {
 const SKY_FILE: Record<Weather, string> = {
   clear: 'clear_midday',
   golden: 'golden_hour',
+  dusk: 'golden_hour',
   damp: 'overcast_race',
   rain: 'heavy_rain',
 };
@@ -205,6 +207,18 @@ const WEATHER_LIGHTING: Record<
     fogColor: [0.84, 0.80, 0.72],
     shadowDarkness: 0.14,
     exposure: 1.02,
+  },
+  dusk: {
+    sunElevDeg: 5.2,
+    sunIntensity: 1.55,
+    sunColor: [1.0, 0.56, 0.30],
+    fillIntensity: 0.20,
+    envIntensity: 0.62,
+    skyTint: [0.58, 0.50, 0.68],
+    fogDensity: 0.00062,
+    fogColor: [0.34, 0.31, 0.44],
+    shadowDarkness: 0.24,
+    exposure: 1.12,
   },
   damp: {
     sunElevDeg: null,
@@ -253,7 +267,7 @@ export function lighting(scene: Scene) {
   scene.autoClear = false;
   scene.autoClearDepthAndStencil = true;
 
-  const skies: Partial<Record<Weather, BakedSky>> = {},
+  const skies: Record<string, BakedSky | undefined> = {},
     sky = CreateBox('weather dome', { size: 1400 }, scene),
     skyMaterial = new BackgroundMaterial('HDR sky', scene);
   sky.infiniteDistance = true;
@@ -265,12 +279,13 @@ export function lighting(scene: Scene) {
   skyMaterial.disableDepthWrite = true;
   skyMaterial.maxSimultaneousLights = 0;
 
-  async function loadSky(w: Weather, signal: AbortSignal): Promise<BakedSky> {
+  async function loadSky(w: Weather, signal: AbortSignal, onFetched?: () => void): Promise<BakedSky> {
     const url = asset(`skies/${SKY_FILE[w]}.env`);
     const response = await fetch(url, { signal });
     if (!response.ok) throw Error(`Cannot load ${w} sky: HTTP ${response.status}`);
     const buffer = new Uint8Array(await response.arrayBuffer());
     signal.throwIfAborted();
+    onFetched?.();
     const info = GetEnvInfo(buffer) as { gt3?: { sun: number[]; radianceScale: number } } | null;
     const meta = info?.gt3;
     if (
@@ -313,15 +328,16 @@ export function lighting(scene: Scene) {
   async function setWeather(w: Weather) {
     loading?.abort();
     loading = undefined;
-    let loaded = skies[w];
+    const key = SKY_FILE[w];
+    let loaded = skies[key];
     if (!loaded) {
       const request = (loading = new AbortController());
       scene.addPendingData(request);
       const deadline = setTimeout(() => request.abort(Error(`Timed out loading the ${w} sky. Retry launch.`)), 45_000);
       try {
-        loaded = await loadSky(w, request.signal);
+        loaded = await loadSky(w, request.signal, () => clearTimeout(deadline));
         if (loading !== request || scene.isDisposed) return;
-        skies[w] = loaded;
+        skies[key] = loaded;
       } catch (error) {
         if (loading !== request || scene.isDisposed) return;
         throw request.signal.aborted ? request.signal.reason : error;
@@ -493,7 +509,7 @@ export function lighting(scene: Scene) {
   }
 
   function update(s: RaceState, rigs: VehicleRig[], _frameMs: number) {
-    lamps?.update(s, rigs);
+    if (!loading) lamps?.update(s, rigs);
   }
 
   return { quality, setWeather, casters, stage, resize, update };
@@ -567,13 +583,14 @@ function raceLights(scene: Scene, sky: AbstractMesh, freeSamplers: number) {
   }
   scene.onDisposeObservable.addOnce(() => cluster?.dispose(false, true));
   function update(s: RaceState, rigs: VehicleRig[]) {
-    const wet = s.settings.weather === 'damp' || s.settings.weather === 'rain';
-    // Only run the 33-light clustered headlamp pass in Damp / Rain when road beams are visible;
-    // in bright daylight, emissive lenses + sun + HDR IBL stay crisp with zero clustered light overhead!
-    const on = s.phase !== 'garage' && wet;
+    const w = s.settings.weather;
+    const lowLight = w === 'dusk' || w === 'damp' || w === 'rain';
+    // Run the 33-light clustered headlamp + pit-apron flood pass in Dusk, Damp & Heavy Rain;
+    // in bright midday/golden sun, emissive lenses + sun + HDR IBL stay crisp with zero clustered light overhead!
+    const on = s.phase !== 'garage' && lowLight;
     if (cluster && cluster.isEnabled() !== on) cluster.setEnabled(on);
     if (!on) return;
-    const wetHeadlamps = s.settings.weather === 'rain' ? 38 : 24;
+    const beamIntensity = w === 'dusk' ? 52 : w === 'rain' ? 38 : 24;
     for (let i = 0; i < lamps.length; i++) {
       const d = s.drivers[i],
         l = lamps[i];
@@ -581,7 +598,7 @@ function raceLights(scene: Scene, sky: AbstractMesh, freeSamplers: number) {
       const sn = Math.sin(d?.yaw || 0),
         cs = Math.cos(d?.yaw || 0);
       l.spot.forEach((p, k) => {
-        p.intensity = active ? wetHeadlamps * (clustered ? 1 : 2) : 0;
+        p.intensity = active ? beamIntensity * (clustered ? 1 : 2) : 0;
         if (d) {
           const side = clustered ? (k === 0 ? -0.72 : 0.72) : 0;
           p.position.set(d.x + 1.92 * sn + side * cs, d.y + 0.49, d.z + 1.92 * cs - side * sn);
@@ -589,7 +606,7 @@ function raceLights(scene: Scene, sky: AbstractMesh, freeSamplers: number) {
         }
       });
       if (l.tail) {
-        l.tail.intensity = active && d.brake > 0.02 ? 5 * d.brake : 0;
+        l.tail.intensity = active && d.brake > 0.02 ? (w === 'dusk' ? 7.5 : 5) * d.brake : 0;
         if (d) l.tail.position.set(d.x - 2.15 * sn, d.y + 0.37, d.z - 2.15 * cs);
       }
     }

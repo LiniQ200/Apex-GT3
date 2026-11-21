@@ -92,7 +92,7 @@ export function createEngineer(circuit: Circuit) {
     }
     const turn = turns[index], metres = untilHandoff - (turn.handoff - turn.entry);
     // Conservative centreline guide, not a prediction of optimal racing-line pace.
-    const grip = weather === 'damp' ? 0.91 : 1, decel = 8.5 * grip * grip;
+    const grip = weather === 'rain' ? 0.81 : weather === 'damp' ? 0.91 : 1, decel = 8.5 * grip * grip;
     const entrySpeed = grip * Math.sqrt(11 / Math.abs(turn.curvature));
     const v = p.speed, excess = v - entrySpeed;
     const brakeAt = Math.max(0, (v * v - entrySpeed * entrySpeed) / (2 * decel)) + 0.55 * v;

@@ -14,6 +14,7 @@ export interface SurfaceSample {
 export const weatherSurfaceTempC: Record<Weather, number> = {
   clear: 38,
   golden: 27,
+  dusk: 21,
   damp: 17,
   rain: 12,
 };
@@ -21,6 +22,7 @@ export const weatherSurfaceTempC: Record<Weather, number> = {
 export const weatherBaseWetness: Record<Weather, number> = {
   clear: 0.0,
   golden: 0.0,
+  dusk: 0.0,
   damp: 0.46,
   rain: 0.88,
 };

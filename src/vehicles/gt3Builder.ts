@@ -171,18 +171,25 @@ export const buildVehicle: BuildVehicle = async (scene, chassis, livery, number)
       );
       shadow.visibility = clamp(0.84 + (avg - restCompression) * 1.8 - lift * 2.4, 0.58, 1);
       clock += Math.max(0, dt);
-      // FIA 4 Hz flashing rear rain light in Damp / Heavy Rain; subtle heartbeat when dry
+      // FIA 4 Hz flashing rear rain light in Damp / Heavy Rain; subtle endurance marker in Dusk
       const wetWeather = weather === 'rain' || weather === 'damp';
+      const duskWeather = weather === 'dusk';
       rain.emissiveIntensity = wetWeather
         ? (clock * 4 + d.id * 0.19) % 1 < 0.5
-          ? 2.2
+          ? 2.4
           : 0.12
-        : (clock + d.id * 0.07) % 1.2 < 0.35
-          ? 0.9
-          : 0.08;
-      tail.emissiveIntensity = 0.83 + 4.2 * clamp(d.brake, 0, 1);
+        : duskWeather
+          ? (clock * 1.4 + d.id * 0.13) % 1 < 0.45
+            ? 1.55
+            : 0.25
+          : (clock + d.id * 0.07) % 1.2 < 0.35
+            ? 0.9
+            : 0.08;
+      tail.emissiveIntensity = (duskWeather ? 1.35 : 0.83) + (duskWeather ? 5.0 : 4.2) * clamp(d.brake, 0, 1);
+      // Exhaust backfire flames on flat-shift upshifts, aggressive rev-matched downshifts, and hot overrun lift-off
       if (lastGear > 0 && d.gear > lastGear && d.speed > 8) flash = 0.105;
-      else if (lastThrottle > 0.58 && d.throttle < 0.13 && d.rpm > 4900 && d.speed > 14) flash = 0.065;
+      else if (lastGear > 1 && d.gear > 0 && d.gear < lastGear && d.speed > 14 && d.rpm > 4400) flash = 0.095;
+      else if (lastThrottle > 0.58 && d.throttle < 0.13 && d.rpm > 4900 && d.speed > 14) flash = 0.068;
       const on = flash > 0;
       if (on !== flaming) {
         for (const mesh of exhaust) mesh.setEnabled(on);
@@ -191,10 +198,10 @@ export const buildVehicle: BuildVehicle = async (scene, chassis, livery, number)
       if (d.id === 0 && on && !flashLight) {
         flashLight = new PointLight('player side exhaust flash', s.exhaustPort.clone(), scene);
         flashLight.parent = body;
-        flashLight.range = 2.5;
+        flashLight.range = 2.8;
         flashLight.diffuse.set(1, 0.38, 0.07);
       }
-      if (flashLight) flashLight.intensity = on ? 8 * (flash / 0.105) : 0;
+      if (flashLight) flashLight.intensity = on ? (duskWeather ? 11.5 : 8) * (flash / 0.105) : 0;
       flash = Math.max(0, flash - dt);
       lastGear = d.gear;
       lastThrottle = d.throttle;

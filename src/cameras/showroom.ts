@@ -28,30 +28,50 @@ const floorPaint: Painter = (c, w, h) => {
     for (let x = 0; x < w; x++) {
       const nx = (x - w / 2) / w,
         ny = (y - h / 2) / h;
-      const light = 20 * Math.exp(-18 * (nx * nx + ny * ny));
-      const tone = 47 + light + random() * 9 + 2 * Math.sin(x * 0.025 + y * 0.056) + 0.9 * Math.sin(y * 0.11);
+      const light = 24 * Math.exp(-14 * (nx * nx + ny * ny));
+      // Deep factory motorsport anthracite epoxy resin with micro-quartz flake
+      const tone = 28 + light + random() * 6 + 1.8 * Math.sin(x * 0.025 + y * 0.056) + 0.8 * Math.sin(y * 0.11);
       const i = 4 * (y * w + x);
       px[i] = tone;
-      px[i + 1] = tone + 3;
-      px[i + 2] = tone + 2;
+      px[i + 1] = tone + 2;
+      px[i + 2] = tone + 4;
       px[i + 3] = 255;
     }
   c.putImageData(image, 0, 0);
+  // Subtle brushed epoxy reflection bands from the 3 overhead linear LED light bars
+  for (const zOff of [-0.18, 0.04, 0.22]) {
+    const gy = h * (0.5 + zOff);
+    const bar = c.createLinearGradient(0, gy - 44, 0, gy + 44);
+    bar.addColorStop(0, 'rgba(210,224,238,0)');
+    bar.addColorStop(0.5, 'rgba(218,230,242,0.085)');
+    bar.addColorStop(1, 'rgba(210,224,238,0)');
+    c.fillStyle = bar;
+    c.fillRect(0, gy - 44, w, 88);
+  }
   for (let i = 0; i <= 8; i++) {
     const p = (i * w) / 8 + w * 0.035;
-    c.fillStyle = '#181e1e93';
-    c.fillRect(p, 0, 1.3, h);
-    c.fillRect(0, p, w, 1.3);
-    c.fillStyle = '#a1a7a635';
-    c.fillRect(p + 1.5, 0, 1, h);
-    c.fillRect(0, p + 1.5, w, 1);
+    c.fillStyle = '#0c1012c0';
+    c.fillRect(p, 0, 1.5, h);
+    c.fillRect(0, p, w, 1.5);
+    c.fillStyle = '#9aa8b028';
+    c.fillRect(p + 1.6, 0, 1, h);
+    c.fillRect(0, p + 1.6, w, 1);
   }
   const m = w / 24;
   c.save();
   c.translate(w / 2, h / 2);
   c.scale(m, m);
-  c.strokeStyle = 'rgba(205,207,187,.65)';
-  c.lineWidth = 0.032;
+  // Subtle rubber slick roll-in tracks leading into the alignment pad
+  for (const side of [-0.84, 0.84]) {
+    const track = c.createLinearGradient(0, -1.8, 0, 7.5);
+    track.addColorStop(0, 'rgba(10,12,13,0.22)');
+    track.addColorStop(0.55, 'rgba(10,12,13,0.14)');
+    track.addColorStop(1, 'rgba(10,12,13,0)');
+    c.fillStyle = track;
+    c.fillRect(side - 0.19, -1.8, 0.38, 9.3);
+  }
+  c.strokeStyle = 'rgba(216,220,206,.72)';
+  c.lineWidth = 0.034;
   for (const side of [-1, 1])
     for (const end of [-1, 1]) {
       c.beginPath();
@@ -60,22 +80,33 @@ const floorPaint: Painter = (c, w, h) => {
       c.lineTo(side * 1.12, end * 2.93);
       c.stroke();
     }
-  c.strokeStyle = 'rgba(237,110,67,.7)';
-  c.lineWidth = 0.048;
+  // Centreline & axle laser setup calibration ticks
+  c.strokeStyle = 'rgba(175,186,184,.28)';
+  c.lineWidth = 0.018;
+  c.beginPath();
+  c.moveTo(0, -2.93);
+  c.lineTo(0, 2.93);
+  c.moveTo(-1.59, 1.32);
+  c.lineTo(1.59, 1.32);
+  c.moveTo(-1.59, -1.32);
+  c.lineTo(1.59, -1.32);
+  c.stroke();
+  c.strokeStyle = 'rgba(255,104,58,.82)';
+  c.lineWidth = 0.052;
   for (const side of [-1, 1]) {
     c.beginPath();
-    c.moveTo(side * 1.65, -2.93);
-    c.lineTo(side * 1.65, -2.38);
+    c.moveTo(side * 1.66, -2.93);
+    c.lineTo(side * 1.66, -2.35);
     c.stroke();
   }
-  // Ambient occlusion underneath the floorpan: rounded rectangular, not a disc.
+  // Deep grounded ambient occlusion underneath the floorpan: rounded rectangular, not a disc.
   c.save();
-  c.scale(1.38, 2.55);
-  const ao = c.createRadialGradient(0, 0, 0.26, 0, 0, 1);
-  ao.addColorStop(0, '#090b0af2');
-  ao.addColorStop(0.65, '#0c100ee0');
-  ao.addColorStop(0.85, '#12171483');
-  ao.addColorStop(1, '#19201c00');
+  c.scale(1.36, 2.52);
+  const ao = c.createRadialGradient(0, 0, 0.24, 0, 0, 1);
+  ao.addColorStop(0, '#040606fa');
+  ao.addColorStop(0.62, '#070909e8');
+  ao.addColorStop(0.84, '#0c10108a');
+  ao.addColorStop(1, '#12181800');
   c.fillStyle = ao;
   c.fillRect(-1, -1, 2, 2);
   c.restore();
@@ -219,11 +250,12 @@ export function buildShowroom(scene: Scene): TransformNode {
     p.rotation.y = Math.PI;
     return p;
   }
-  const slab = texture('resin inspection floor', 1024, 1024, floorPaint, 0.44, 0.14);
-  // Polished factory paddock epoxy clearcoat reflection on the Bay 01 floor
+  const slab = texture('resin inspection floor', 1024, 1024, floorPaint, 0.28, 0.18);
+  // Mirror-gloss factory paddock epoxy clearcoat reflection on the Bay 01 floor
   slab.clearCoat.isEnabled = true;
-  slab.clearCoat.intensity = 0.48;
-  slab.clearCoat.roughness = 0.14;
+  slab.clearCoat.intensity = 0.88;
+  slab.clearCoat.roughness = 0.065;
+  slab.clearCoat.indexOfRefraction = 1.54;
   part(CreateGround('garage.floor', { width: 24, height: 24 }, scene), slab, 0, -0.006, 0);
   const facade = texture('anodised wall mural', 2048, 512, wallPaint, 0.66, 0.23);
   face('rear wall cladding', 0, 3.2, -6.8, 25.6, 6.4, facade);
@@ -394,13 +426,13 @@ export function buildShowroom(scene: Scene): TransformNode {
   // Only these very short-range practicals belong to the set; the scene's sky,
   // IBL, sun, exposure, and post chain remain the engine's responsibility.
   for (const [n, x, y, z, power, color] of [
-    ['key', -3.4, 4.25, 2.6, 42, '#ffe9d3'],
-    ['rim', 2.65, 3.4, -2.6, 34, '#dde9ff'],
+    ['key', -3.6, 4.35, 2.8, 56, '#fff1dd'],
+    ['rim', 2.85, 3.35, -2.7, 46, '#cfe4ff'],
   ] as const) {
     const light = new PointLight(`garage.softbox.${n}`, new Vector3(x, y, z), scene);
     light.parent = root;
-    light.range = 14;
-    light.radius = 0.85;
+    light.range = 15;
+    light.radius = 0.9;
     light.diffuse = Color3.FromHexString(color);
     light.intensity = power;
   }

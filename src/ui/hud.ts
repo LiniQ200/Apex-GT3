@@ -16,6 +16,7 @@ const cameras = { chase: 'CHASE', cockpit: 'HELMET', hood: 'ONBOARD', tv: 'TRACK
 const weatherLabels: [Weather, string][] = [
   ['clear', 'CLEAR'],
   ['golden', 'GOLDEN'],
+  ['dusk', 'DUSK'],
   ['damp', 'DAMP'],
   ['rain', 'RAIN'],
 ];
@@ -71,9 +72,9 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     <div class="ax-lights"><div class="ax-lamps">${'<b></b>'.repeat(5)}</div><span class="ax-micro">START PROCEDURE</span></div>
     <div class="ax-radar ax-glass"><header class="ax-mini-head">${icon('map')}<b>TRACK MAP</b><span>VD'O</span></header>${outline.svg}<div class="ax-map-caption"><i></i> YOU <span>• &nbsp; FIELD</span></div></div>
     <details class="ax-dash ax-glass" open><summary class="ax-mini-head" aria-label="Driving telemetry" title="Show or hide driving telemetry"><b>MoTeC <em>C127</em></b><span data-v="hardware"></span>${icon('down')}</summary><div class="ax-shift">${Array.from({ length: 15 }, (_, i) => `<i style="--led:${i < 6 ? '#66e5a0' : i < 11 ? '#ffe063' : '#ff573c'}"></i>`).join('')}</div>
-      <div class="ax-readout"><div class="ax-gear"><span>GEAR</span><b data-v="gear">N</b></div><div class="ax-speed"><strong data-v="speed">0</strong><button data-unit title="Switch speed unit" aria-label="Switch speed unit">KM/H</button></div><div class="ax-revs"><b data-v="rpm">0</b><span>RPM</span></div></div>
+      <div class="ax-readout"><div class="ax-gear"><span>GEAR</span><b data-v="gear">N</b></div><div class="ax-speed"><strong data-v="speed">0</strong><button data-unit title="Switch speed unit" aria-label="Switch speed unit">KM/H</button></div><div class="ax-gmeter" title="Live G-Force friction circle (2.0G ring)"><svg viewBox="-16 -16 32 32" aria-hidden="true"><circle cx="0" cy="0" r="14" class="ax-g-ring"/><circle cx="0" cy="0" r="7" class="ax-g-mid"/><line x1="-14" y1="0" x2="14" y2="0"/><line x1="0" y1="-14" x2="0" y2="14"/><circle data-g-dot cx="0" cy="0" r="2.6" class="ax-g-dot"/></svg><span data-v="gforce">0.0G</span></div><div class="ax-revs"><b data-v="rpm">0</b><span>RPM</span></div></div>
       <div class="ax-pedals"><label>THR<i><b data-pedal></b></i></label><label>BRK<i><b data-pedal></b></i></label></div>
-      <div class="ax-thermal-head ax-micro"><span data-v="compoundMeta">SOFT · FUEL 36L</span><span>TYRE °C / WEAR</span></div><div class="ax-thermals">${['FL', 'FR', 'RL', 'RR'].map((w) => `<div class="ax-wheel"><span>${w}</span><b></b><small></small><i><s></s></i></div>`).join('')}</div>
+      <div class="ax-thermal-head ax-micro"><span data-v="compoundMeta">SOFT · FUEL 36L</span><span>TYRE / DISC / SUSP</span></div><div class="ax-thermals">${['FL', 'FR', 'RL', 'RR'].map((w) => `<div class="ax-wheel"><span>${w}</span><b></b><small></small><em class="ax-rotor" title="Brake rotor temp"></em><i><s></s></i></div>`).join('')}</div>
       <div class="ax-assists"><button data-action="cycleTc" title="Cycle traction control"></button><button data-action="cycleAbs" title="Cycle anti-lock braking"></button><button data-action="togglePitLimiter" data-pit-lim title="Toggle 60 km/h pit limiter (L)">LIM</button><span data-v="surface"></span></div></details>`;
 
   const pitwall = createPitwall(el.querySelector<HTMLElement>('.ax-pitwall')!, circuit);
@@ -87,9 +88,11 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
   const leds = Array.from(el.querySelectorAll<HTMLElement>('.ax-shift i'));
   const lamps = Array.from(el.querySelectorAll('.ax-lamps b'));
   const pedals = Array.from(el.querySelectorAll<HTMLElement>('[data-pedal]'));
+  const gDot = el.querySelector<SVGCircleElement>('[data-g-dot]')!;
   const wheels = Array.from(el.querySelectorAll('.ax-wheel'), (n) => ({
     tyre: n.querySelector('b')!,
     brake: n.querySelector('small')!,
+    rotor: n.querySelector<HTMLElement>('.ax-rotor')!,
     spring: n.querySelector('s')!,
   }));
   const weatherBtns = Array.from(el.querySelectorAll<HTMLButtonElement>('[data-weather]'));
@@ -122,6 +125,10 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
   const dots = new Map<number, SVGCircleElement>();
   const timing = new Map<number, Transponder>();
   let lastTime = -1,
+    lastSpeedG = 0,
+    lastYawG = 0,
+    gLatSmooth = 0,
+    gLongSmooth = 0,
     best = [Infinity, Infinity, Infinity],
     previous = best.slice(),
     activeLap = 0,
@@ -130,6 +137,10 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     pitwall.reset();
     timing.clear();
     lastTime = -1;
+    lastSpeedG = 0;
+    lastYawG = 0;
+    gLatSmooth = 0;
+    gLongSmooth = 0;
     activeLap = 0;
     lastSplitColors = ['', '', ''];
     best = [Infinity, Infinity, Infinity];
@@ -161,6 +172,20 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
       instruments = layout;
     }
     if (s.elapsed < lastTime) reset();
+    const dtG = lastTime >= 0 ? s.elapsed - lastTime : 0;
+    if (dtG > 0.001 && dtG < 3.0) {
+      const dYaw = Math.atan2(Math.sin(player.yaw - lastYawG), Math.cos(player.yaw - lastYawG));
+      const rawLong = (player.speed - lastSpeedG) / (dtG * 9.81);
+      const rawLat = (player.speed * dYaw) / (dtG * 9.81);
+      const alphaG = 1 - Math.exp(-10 * Math.min(dtG, 0.25));
+      gLongSmooth += (Math.max(-2.4, Math.min(2.4, rawLong)) - gLongSmooth) * alphaG;
+      gLatSmooth += (Math.max(-2.4, Math.min(2.4, rawLat)) - gLatSmooth) * alphaG;
+    } else if (lastTime < 0) {
+      gLongSmooth = 0;
+      gLatSmooth = 0;
+    }
+    lastSpeedG = player.speed;
+    lastYawG = player.yaw;
     lastTime = s.elapsed;
     pitwall.update(s, player, mph);
 
@@ -315,14 +340,25 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     pedals[0].style.transform = `scaleX(${clip(player.throttle)})`;
     pedals[1].style.transform = `scaleX(${clip(player.brake)})`;
 
+    const gMag = Math.hypot(gLatSmooth, gLongSmooth);
+    const gx = Math.max(-13, Math.min(13, (-gLatSmooth / 2) * 13));
+    const gy = Math.max(-13, Math.min(13, (gLongSmooth / 2) * 13));
+    gDot.setAttribute('cx', gx.toFixed(1));
+    gDot.setAttribute('cy', gy.toFixed(1));
+    write('gforce', `${gMag.toFixed(1)}G`);
+
     write('compoundMeta', `${COMPOUNDS[player.compound].short} · FUEL ${player.fuelL.toFixed(1)}L`);
     wheels.forEach((w, i) => {
       const t = player.tireTempC[i] || 0,
+        bt = player.brakeTempC[i] || 150,
         wearPct = Math.round((player.tireWear[i] ?? 1) * 100);
       w.tyre.textContent = `${Math.round(t)}°`;
       w.brake.textContent = `${wearPct}%`;
       w.tyre.style.color = t > 105 ? '#ff9668' : t > 62 ? '#92d8a8' : '#a4bacc';
       w.brake.style.color = wearPct < 35 ? '#ff7556' : wearPct < 65 ? '#e6bd7e' : '';
+      w.rotor.style.background =
+        bt > 560 ? '#ff4a28' : bt > 380 ? '#ff9b3d' : bt > 240 ? '#d8b468' : '#4a5753';
+      w.rotor.title = `Rotor: ${Math.round(bt)}°C`;
       w.spring.style.transform = `scaleX(${clip((player.wheelCompressionM[i] || 0) / 0.16)})`;
     });
     tc.textContent = `TC ${s.tc}`;

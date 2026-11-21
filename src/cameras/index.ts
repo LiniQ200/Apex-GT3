@@ -48,6 +48,14 @@ export function createCameras(
     lastZ = 0,
     lastSpeed = 0,
     lastYaw = 0,
+    lastElapsed = -1,
+    holdSide = 0,
+    holdDip = 0,
+    holdPull = 0,
+    holdLookBias = 0,
+    holdLat = 0,
+    holdShakeX = 0,
+    holdShakeY = 0,
     followYaw = 0,
     garageClock = 0,
     rumbleClock = 0,
@@ -139,10 +147,28 @@ export function createCameras(
         inGarage = s.phase === 'garage';
       if (showroom.isEnabled() !== inGarage) showroom.setEnabled(inGarage);
       const car = s.drivers.find((d) => d.id === 0);
+      let sprayAhead = 0;
+      if (car && (s.settings.weather === 'rain' || s.settings.weather === 'damp')) {
+        for (const r of s.drivers) {
+          if (r.id === car.id || r.speed < 12) continue;
+          let gap = r.s - car.s;
+          if (gap < -circuit.length * 0.5) gap += circuit.length;
+          else if (gap > circuit.length * 0.5) gap -= circuit.length;
+          if (gap > 2.5 && gap < 28 && Math.abs(r.d - car.d) < 3.2) {
+            sprayAhead = Math.max(sprayAhead, clamp((28 - gap) / 22, 0, 1) * clamp(r.speed / 55, 0, 1));
+          }
+        }
+      }
       const eye = cockpit(
         car,
         !inGarage && !lookBack && s.camera === 'cockpit',
         s.phase === 'race' || s.phase === 'lights',
+        s.settings.weather,
+        dt,
+        s.delta,
+        s.tc,
+        s.abs,
+        sprayAhead,
       );
       if (inGarage) {
         garage(dt);
@@ -152,84 +178,94 @@ export function createCameras(
       if (!car) return;
       const shot = lookBack ? 'reverse' : s.camera;
       const movedDist = Math.hypot(car.x - lastX, car.z - lastZ);
-      const jump = movedDist > Math.max(18, car.speed * dt * 2.5);
-      const cut = lastShot !== shot || jump;
-      const deltaYaw = cut ? 0 : wrapAngle(car.yaw - lastYaw),
-        acc = cut || dt < 0.001 ? 0 : (car.speed - lastSpeed) / dt;
-      const lat = cut || dt < 0.001 ? 0 : (car.speed * deltaYaw) / dt;
-      const side = sway.at(clamp(-lat * 0.015, -0.24, 0.24), 10.5, dt, cut),
-        dip = heave.at(clamp(acc * 0.012, -0.14, 0.12), 9, dt, cut),
-        pull = surge.at(clamp(acc * 0.035, -0.37, 0.33), 6.8, dt, cut);
-      lastShot = shot;
-      lastYaw = car.yaw;
-      lastSpeed = car.speed;
-      lastX = car.x;
-      lastZ = car.z;
+      const jump = movedDist > Math.max(18, car.speed * Math.max(dt, 0.05) * 3.5);
+      const cut = lastShot !== shot || jump || lastElapsed < 0 || s.elapsed < lastElapsed;
+      const simDt = cut ? 0 : Math.max(0, Math.min(0.25, s.elapsed - lastElapsed));
+      const stepped = cut || simDt > 0.0001 || movedDist > 0.001;
+      if (stepped) {
+        const effDt = simDt > 0.0001 ? simDt : dt;
+        const deltaYaw = cut ? 0 : wrapAngle(car.yaw - lastYaw),
+          acc = cut || effDt < 0.001 ? 0 : (car.speed - lastSpeed) / effDt;
+        holdLat = cut || effDt < 0.001 ? 0 : (car.speed * deltaYaw) / effDt;
+        holdSide = sway.at(clamp(-holdLat * 0.015, -0.24, 0.24), 10.5, effDt, cut);
+        holdDip = heave.at(clamp(acc * 0.012, -0.14, 0.12), 9, effDt, cut);
+        holdPull = surge.at(clamp(acc * 0.035, -0.37, 0.33), 6.8, effDt, cut);
+        const speedNorm = clamp(car.speed / 85, 0, 1);
+        const moving = movedDist > 0.001 && !cut;
+        if (moving) rumbleClock += effDt * (24 + 42 * speedNorm);
+        const surfaceAmp =
+          reducedMotion || !moving || car.speed < 4
+            ? 0
+            : car.surface === 'kerb'
+              ? 0.016 * (0.4 + 0.6 * speedNorm)
+              : car.surface === 'gravel' || car.surface === 'grass'
+                ? 0.024 * (0.4 + 0.6 * speedNorm)
+                : 0.0016 * speedNorm * speedNorm;
+        holdShakeY = surfaceAmp * Math.sin(rumbleClock * 1.9);
+        holdShakeX = surfaceAmp * 0.55 * Math.cos(rumbleClock * 1.3);
+        holdLookBias = apexLook.at(shot === 'cockpit' ? clamp(car.steer * 5.2, -2.4, 2.4) : 0, 7.5, effDt, cut);
+        lastShot = shot;
+        lastYaw = car.yaw;
+        lastSpeed = car.speed;
+        lastX = car.x;
+        lastZ = car.z;
+        lastElapsed = s.elapsed;
+      }
       const sin = Math.sin(car.yaw),
         cos = Math.cos(car.yaw),
         speed = clamp(car.speed / 85, 0, 1);
-      // Tactile kerb/gravel & high-speed aero chassis micro-rumble (only while actually moving; zero jitter when paused/frozen)
-      const moving = movedDist > 0.001 && !cut;
-      if (moving) rumbleClock += dt * (24 + 42 * speed);
-      const surfaceAmp =
-        reducedMotion || !moving || car.speed < 4
-          ? 0
-          : car.surface === 'kerb'
-            ? 0.016 * (0.4 + 0.6 * speed)
-            : car.surface === 'gravel' || car.surface === 'grass'
-              ? 0.024 * (0.4 + 0.6 * speed)
-              : 0.0022 * speed * speed;
-      const shakeY = surfaceAmp * Math.sin(rumbleClock * 1.9);
-      const shakeX = surfaceAmp * 0.55 * Math.cos(rumbleClock * 1.3);
+      const effSpringDt = simDt > 0.0001 ? simDt : cut ? 0 : 0;
 
       if (shot === 'chase' || shot === 'reverse') {
         const back = shot === 'reverse';
         const desired = car.yaw + (back ? Math.PI : 0);
-        followYaw = cut ? desired : followYaw + wrapAngle(desired - followYaw) * (1 - Math.exp(-10.5 * dt));
+        followYaw = cut
+          ? desired
+          : stepped
+            ? followYaw + wrapAngle(desired - followYaw) * (1 - Math.exp(-10.5 * (simDt > 0.0001 ? simDt : dt)))
+            : followYaw;
         const fs = Math.sin(followYaw),
           fc = Math.cos(followYaw),
-          dist = 5.85 + speed * 0.55 + pull * 0.85,
-          height = 2.08 + speed * 0.16 + dip + shakeY * 0.7;
+          dist = 5.85 + speed * 0.55 + holdPull * 0.85,
+          height = 2.08 + speed * 0.16 + holdDip + holdShakeY * 0.7;
         camera.position.set(
-          car.x - fs * dist + fc * (side + shakeX),
+          car.x - fs * dist + fc * (holdSide + holdShakeX),
           car.y + height + (back ? -1 : 1) * dist * Math.sin(car.pitch) * 0.85,
-          car.z - fc * dist - fs * (side + shakeX),
+          car.z - fc * dist - fs * (holdSide + holdShakeX),
         );
         target.set(
           car.x + fs * 2.55,
           car.y + 0.94 - (back ? -1 : 1) * 2.55 * Math.sin(car.pitch),
           car.z + fc * 2.55,
         );
-        camera.fov = lens.at(0.84 + 0.14 * speed, 6.5, dt, cut);
+        camera.fov = lens.at(0.84 + 0.14 * speed, 6.5, effSpringDt, cut);
         camera.setTarget(target);
-        camera.rotation.z = clamp(car.roll * 0.22 + side * 0.025, -0.03, 0.03);
+        camera.rotation.z = clamp(car.roll * 0.22 + holdSide * 0.025, -0.03, 0.03);
         return;
       }
       if (shot === 'hood' || shot === 'cockpit') {
         const helmet = shot === 'cockpit',
           central = s.settings.chassis === 'concept';
         Matrix.RotationYawPitchRollToRef(car.yaw, car.pitch, car.roll, rotation);
-        // Subtle G-force helmet sway, braking pitch nod, and steering apex look-into-turn
-        const lookBias = apexLook.at(helmet ? clamp(car.steer * 5.2, -2.4, 2.4) : 0, 7.5, dt, cut);
         if (eye) {
           camera.position.copyFrom(eye);
-          camera.position.y += shakeY * 0.45 - (helmet ? dip * 0.12 : 0);
+          camera.position.y += holdShakeY * 0.40 - (helmet ? holdDip * 0.10 : 0);
         } else {
           // Provisional helmet pose while a new rig is loading behind the curtain.
           local.set(
             helmet && !central ? -0.315 : 0,
-            (helmet ? (central ? 1.11 : 0.96) : 1.06) + shakeY * 0.45,
+            (helmet ? (central ? 1.11 : 0.96) : 1.06) + holdShakeY * 0.40,
             helmet ? (central ? 0.24 : -0.16) : 1.21,
           );
           Vector3.TransformCoordinatesToRef(local, rotation, camera.position);
           camera.position.addInPlaceFromFloats(car.x, car.y, car.z);
         }
-        local.set(lookBias, (helmet ? -1.05 : -1.92) - dip * 0.9, 24);
+        local.set(holdLookBias, (helmet ? -1.05 : -1.92) - holdDip * 0.85, 24);
         Vector3.TransformNormalToRef(local, rotation, target);
         target.addInPlace(camera.position);
-        camera.fov = lens.at(helmet ? 1.05 + 0.045 * speed : 0.935 + 0.065 * speed, 8, dt, cut);
+        camera.fov = lens.at(helmet ? 1.05 + 0.045 * speed : 0.935 + 0.065 * speed, 8, effSpringDt, cut);
         camera.setTarget(target);
-        camera.rotation.z = car.roll + (helmet ? clamp(-lat * 0.0012, -0.022, 0.022) : 0);
+        camera.rotation.z = car.roll + (helmet ? clamp(-holdLat * 0.0012, -0.022, 0.022) : 0);
         return;
       }
       // A chain of fixed tripod positions cuts between high stand, low apex and

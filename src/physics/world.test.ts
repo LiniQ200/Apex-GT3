@@ -170,3 +170,79 @@ test('coasting into mirrored turns heats the outside front tread without touchin
     }
   } finally { world.dispose(); }
 });
+
+test('458 NA V8 and Concept Endurance Flat-6 deliver distinct BoP torque and shift profiles', async (t) => {
+  const world = await createWorld(strip, [slab(-40, 40, 320)]);
+  try {
+    const run = (chassis: '458' | 'concept') => {
+      const state = createRaceState('test');
+      state.settings.chassis = chassis;
+      const d = state.drivers[0];
+      world.add(d, 20, 0, undefined, chassis);
+      for (let i = 0; i < 65; i++) { world.control(d, brake, state); world.step(); world.read(d); }
+      let peakRpm = 0;
+      for (let i = 0; i < 360; i++) {
+        world.control(d, launch, state);
+        world.step();
+        world.read(d);
+        peakRpm = Math.max(peakRpm, d.rpm);
+      }
+      const res = { speed: d.speed, peakRpm, gear: d.gear };
+      world.clear();
+      return res;
+    };
+    const v8 = run('458');
+    const flat6 = run('concept');
+    assert.ok(v8.speed > 26 && flat6.speed > 26, `both chassis must accelerate cleanly: ${JSON.stringify({ v8, flat6 })}`);
+    assert.ok(Math.abs(v8.speed - flat6.speed) < 2.0, 'BoP must keep 458 and Concept closely matched off the line');
+    assert.ok(v8.peakRpm > flat6.peakRpm + 100, '458 NA V8 should rev higher before upshift');
+    t.diagnostic(`3s launch speed (458/concept): ${v8.speed.toFixed(2)}/${flat6.speed.toFixed(2)} m/s, peak RPM: ${Math.round(v8.peakRpm)}/${Math.round(flat6.peakRpm)}`);
+  } finally { world.dispose(); }
+});
+
+test('garage aeroWing and brakeBias setup parameters measurably tune top speed and brake thermal split', async (t) => {
+  const world = await createWorld(strip, [slab(-40, 40, 820)]);
+  try {
+    const runAero = (aeroWing: 'low' | 'high') => {
+      const state = createRaceState('test');
+      state.settings.aeroWing = aeroWing;
+      const d = state.drivers[0];
+      world.add(d, 20, 0, undefined, '458', { aeroWing, brakeBias: '57' });
+      for (let i = 0; i < 65; i++) { world.control(d, brake, state); world.step(); world.read(d); }
+      for (let i = 0; i < 960; i++) { world.control(d, launch, state); world.step(); world.read(d); }
+      const speed = d.speed;
+      world.clear();
+      return speed;
+    };
+    const lowDragSpeed = runAero('low');
+    const highDfSpeed = runAero('high');
+    assert.ok(
+      lowDragSpeed > highDfSpeed + 0.35,
+      `low-drag rear wing must run faster down the straight: low=${lowDragSpeed.toFixed(2)}, high=${highDfSpeed.toFixed(2)}`,
+    );
+
+    const runBrake = (brakeBias: '54' | '60') => {
+      const state = createRaceState('test');
+      state.settings.brakeBias = brakeBias;
+      const d = state.drivers[0];
+      world.add(d, 20, 0, undefined, '458', { aeroWing: 'balanced', brakeBias });
+      for (let i = 0; i < 65; i++) { world.control(d, brake, state); world.step(); world.read(d); }
+      for (let i = 0; i < 300; i++) { world.control(d, launch, state); world.step(); world.read(d); }
+      const f0 = d.brakeTempC[0], r0 = d.brakeTempC[2];
+      for (let i = 0; i < 180; i++) { world.control(d, brake, state); world.step(); world.read(d); }
+      const frontGain = d.brakeTempC[0] - f0;
+      const rearGain = d.brakeTempC[2] - r0;
+      world.clear();
+      return { frontGain, rearGain };
+    };
+    const rearBias = runBrake('54');
+    const frontBias = runBrake('60');
+    assert.ok(
+      frontBias.frontGain / Math.max(0.1, frontBias.rearGain) > rearBias.frontGain / Math.max(0.1, rearBias.rearGain),
+      `60% front bias should shift braking heat forward vs 54%: ${JSON.stringify({ rearBias, frontBias })}`,
+    );
+    t.diagnostic(
+      `8s aero speed (low/high): ${lowDragSpeed.toFixed(2)}/${highDfSpeed.toFixed(2)} m/s; front/rear thermal ratio (54%/60%): ${(rearBias.frontGain / Math.max(0.1, rearBias.rearGain)).toFixed(2)}/${(frontBias.frontGain / Math.max(0.1, frontBias.rearGain)).toFixed(2)}`,
+    );
+  } finally { world.dispose(); }
+});

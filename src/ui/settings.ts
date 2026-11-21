@@ -8,6 +8,7 @@ export const options = {
   weather: [
     ['clear', 'Clear Midday · Dry'],
     ['golden', 'Golden Hour · Dry'],
+    ['dusk', 'Twilight Dusk · Dry'],
     ['damp', 'Overcast · Damp'],
     ['rain', 'Heavy Rain · Wet'],
   ],
@@ -15,6 +16,16 @@ export const options = {
     ['soft', 'Dry Slick — Soft'],
     ['medium', 'Dry Slick — Medium'],
     ['wet', 'Rain Treaded — Wet'],
+  ],
+  aeroWing: [
+    ['low', 'Low Drag'],
+    ['balanced', 'Balanced'],
+    ['high', 'High DF'],
+  ],
+  brakeBias: [
+    ['54', '54% Rear'],
+    ['57', '57% Std'],
+    ['60', '60% Front'],
   ],
   mode: [
     ['sprint', '3-lap grid sprint'],

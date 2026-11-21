@@ -27,13 +27,13 @@ float cdNoise(vec2 p) {
     f.y
   );
 }
-// Fast 3-octave FBM cumulus/cirrus field (2x faster than 4-octave while retaining crisp cloud puffs)
+// Sculpted 3-octave cumulus FBM + high wispy cirrus veil (crisp photographic cloud depth)
 float cdFbm(vec2 p) {
   float v = 0.0, a = 0.54;
   mat2 rot = mat2(0.80, -0.60, 0.60, 0.80);
   for (int i = 0; i < 3; i++) {
     v += a * cdNoise(p);
-    p = rot * p * 2.06 + vec2(13.1, 7.7);
+    p = rot * p * 2.08 + vec2(13.1, 7.7);
     a *= 0.48;
   }
   return v;
@@ -61,7 +61,7 @@ fn cdFbm(pIn: vec2f) -> f32 {
   let rot = mat2x2f(0.80, -0.60, 0.60, 0.80);
   for (var i = 0; i < 3; i++) {
     v += a * cdNoise(p);
-    p = rot * p * 2.06 + vec2f(13.1, 7.7);
+    p = rot * p * 2.08 + vec2f(13.1, 7.7);
     a *= 0.48;
   }
   return v;
@@ -73,29 +73,36 @@ const cloudGlslApply = `#ifdef CLOUD_DOME
   vec3 dir = normalize(vPositionW - vEyePosition.xyz);
   float elev = max(0.0, dir.y);
   // Perspective sky plane projection for realistic horizon convergence
-  vec2 skyUV = dir.xz / (elev + 0.16);
+  vec2 skyUV = dir.xz / (elev + 0.15);
   float t = cloudTime.x;
   vec2 wind = vec2(t * cloudTime.y, t * cloudTime.y * 0.42);
-  float n1 = cdFbm(skyUV * 0.64 + wind);
-  float n2 = cdNoise(skyUV * 1.95 - wind * 0.72 + vec2(4.2, 9.1));
-  float dens = n1 * 0.78 + n2 * 0.22;
+  float n1 = cdFbm(skyUV * 0.62 + wind);
+  // High-altitude sheared cirrus streaks
+  float cirrus = cdNoise(vec2(skyUV.x * 1.45, skyUV.y * 0.38) + wind * 0.45 + vec2(9.4, 2.1));
+  float dens = n1 * 0.84 + cirrus * 0.16;
   float cov = cloudTime.z;
-  float cloudMask = smoothstep(cov - 0.14, cov + 0.24, dens);
+  float cloudMask = smoothstep(cov - 0.14, cov + 0.22, dens);
+  float wispy = smoothstep(0.60, 0.90, cirrus) * (1.0 - cloudMask * 0.7) * 0.26 * cloudSun.w;
   // Soft horizon fade so clouds dissolve seamlessly into distant haze well above the horizon
-  float horizonFade = smoothstep(0.09, 0.36, elev);
-  // Sunlit forward-scattering rim & cloud top illumination + storm lightning flash
+  float horizonFade = smoothstep(0.07, 0.34, elev);
+  // Physical Henyey-Greenstein forward scattering silver lining + Beer-Lambert self-shadowing
   vec3 sunDir = normalize(cloudSun.xyz);
   float sunCos = clamp(dot(dir, sunDir), 0.0, 1.0);
-  float silver = pow(sunCos, 5.5) * cloudSun.w;
-  float edgeLit = smoothstep(0.24, 0.76, n1 - n2 * 0.28 + 0.30);
-  vec3 cloudCol = mix(cloudShadowCol.rgb, cloudLightCol.rgb, clamp(edgeLit * 0.82 + silver * 0.45, 0.0, 1.0));
-  cloudCol += cloudSunCol.rgb * (silver * 0.92 * (1.0 - cloudMask * 0.42));
+  float hg = 0.22 / pow(1.5625 - 1.50 * sunCos, 1.5);
+  float silver = clamp(hg * 0.28 + pow(sunCos, 6.5) * 0.85, 0.0, 1.8) * cloudSun.w;
+  // Directional sample offset toward sun approximates volumetric cloud crest illumination
+  float sunLit = cdNoise(skyUV * 0.62 + wind + sunDir.xz * 0.24);
+  float crest = clamp((n1 - sunLit) * 1.85 + 0.56, 0.0, 1.0);
+  float opticalThick = exp(-cloudMask * 0.85);
+  vec3 cloudCol = mix(cloudShadowCol.rgb, cloudLightCol.rgb, clamp(crest * 0.78 + silver * 0.32, 0.0, 1.0));
+  cloudCol += cloudSunCol.rgb * (silver * 0.78 * (0.38 + 0.62 * opticalThick));
   // Subtle storm sheet-lightning pulse in heavy rain (cloudSunCol.w carries live flash pulse 0..1)
-  cloudCol += vec3(0.72, 0.84, 1.15) * (cloudSunCol.w * smoothstep(0.45, 0.85, n1));
-  // Subtle atmospheric Mie solar corona when sunny (clear/golden)
-  float corona = (pow(sunCos, 38.0) * 0.50 + pow(sunCos, 280.0) * 1.65) * cloudSun.w * smoothstep(0.04, 0.14, elev);
-  float alphaOut = clamp(cloudMask * horizonFade * cloudTime.w + corona * 0.26, 0.0, 0.78);
-  vec3 outRgb = cloudCol * (cloudMask * horizonFade * cloudTime.w) + cloudSunCol.rgb * corona;
+  cloudCol += vec3(0.76, 0.88, 1.22) * (cloudSunCol.w * smoothstep(0.42, 0.84, n1));
+  // Atmospheric Mie solar corona & warm horizon scattering belt
+  float corona = (pow(sunCos, 28.0) * 0.46 + pow(sunCos, 240.0) * 1.75) * cloudSun.w * smoothstep(0.03, 0.13, elev);
+  float layerAlpha = clamp((cloudMask + wispy) * horizonFade * cloudTime.w, 0.0, 0.84);
+  float alphaOut = clamp(layerAlpha + corona * 0.24, 0.0, 0.84);
+  vec3 outRgb = cloudCol * layerAlpha + cloudSunCol.rgb * corona;
   finalEmissive = outRgb / max(0.001, alphaOut);
   alpha = alphaOut;
 }
@@ -105,25 +112,30 @@ const cloudWgslApply = `#ifdef CLOUD_DOME
 {
   let dir = normalize(input.vPositionW - scene.vEyePosition.xyz);
   let elev = max(0.0, dir.y);
-  let skyUV = dir.xz / (elev + 0.16);
+  let skyUV = dir.xz / (elev + 0.15);
   let t = uniforms.cloudTime.x;
   let wind = vec2f(t * uniforms.cloudTime.y, t * uniforms.cloudTime.y * 0.42);
-  let n1 = cdFbm(skyUV * 0.64 + wind);
-  let n2 = cdNoise(skyUV * 1.95 - wind * 0.72 + vec2f(4.2, 9.1));
-  let dens = n1 * 0.78 + n2 * 0.22;
+  let n1 = cdFbm(skyUV * 0.62 + wind);
+  let cirrus = cdNoise(vec2f(skyUV.x * 1.45, skyUV.y * 0.38) + wind * 0.45 + vec2f(9.4, 2.1));
+  let dens = n1 * 0.84 + cirrus * 0.16;
   let cov = uniforms.cloudTime.z;
-  let cloudMask = smoothstep(cov - 0.14, cov + 0.24, dens);
-  let horizonFade = smoothstep(0.09, 0.36, elev);
+  let cloudMask = smoothstep(cov - 0.14, cov + 0.22, dens);
+  let wispy = smoothstep(0.60, 0.90, cirrus) * (1.0 - cloudMask * 0.7) * 0.26 * uniforms.cloudSun.w;
+  let horizonFade = smoothstep(0.07, 0.34, elev);
   let sunDir = normalize(uniforms.cloudSun.xyz);
   let sunCos = clamp(dot(dir, sunDir), 0.0, 1.0);
-  let silver = pow(sunCos, 5.5) * uniforms.cloudSun.w;
-  let edgeLit = smoothstep(0.24, 0.76, n1 - n2 * 0.28 + 0.30);
-  var cloudCol = mix(uniforms.cloudShadowCol.rgb, uniforms.cloudLightCol.rgb, clamp(edgeLit * 0.82 + silver * 0.45, 0.0, 1.0));
-  cloudCol += uniforms.cloudSunCol.rgb * (silver * 0.92 * (1.0 - cloudMask * 0.42));
-  cloudCol += vec3f(0.72, 0.84, 1.15) * (uniforms.cloudSunCol.w * smoothstep(0.45, 0.85, n1));
-  let corona = (pow(sunCos, 38.0) * 0.50 + pow(sunCos, 280.0) * 1.65) * uniforms.cloudSun.w * smoothstep(0.04, 0.14, elev);
-  let alphaOut = clamp(cloudMask * horizonFade * uniforms.cloudTime.w + corona * 0.26, 0.0, 0.78);
-  let outRgb = cloudCol * (cloudMask * horizonFade * uniforms.cloudTime.w) + uniforms.cloudSunCol.rgb * corona;
+  let hg = 0.22 / pow(1.5625 - 1.50 * sunCos, 1.5);
+  let silver = clamp(hg * 0.28 + pow(sunCos, 6.5) * 0.85, 0.0, 1.8) * uniforms.cloudSun.w;
+  let sunLit = cdNoise(skyUV * 0.62 + wind + sunDir.xz * 0.24);
+  let crest = clamp((n1 - sunLit) * 1.85 + 0.56, 0.0, 1.0);
+  let opticalThick = exp(-cloudMask * 0.85);
+  var cloudCol = mix(uniforms.cloudShadowCol.rgb, uniforms.cloudLightCol.rgb, clamp(crest * 0.78 + silver * 0.32, 0.0, 1.0));
+  cloudCol += uniforms.cloudSunCol.rgb * (silver * 0.78 * (0.38 + 0.62 * opticalThick));
+  cloudCol += vec3f(0.76, 0.88, 1.22) * (uniforms.cloudSunCol.w * smoothstep(0.42, 0.84, n1));
+  let corona = (pow(sunCos, 28.0) * 0.46 + pow(sunCos, 240.0) * 1.75) * uniforms.cloudSun.w * smoothstep(0.03, 0.13, elev);
+  let layerAlpha = clamp((cloudMask + wispy) * horizonFade * uniforms.cloudTime.w, 0.0, 0.84);
+  let alphaOut = clamp(layerAlpha + corona * 0.24, 0.0, 0.84);
+  let outRgb = cloudCol * layerAlpha + uniforms.cloudSunCol.rgb * corona;
   finalEmissive = outRgb / max(0.001, alphaOut);
   alpha = alphaOut;
 }
@@ -231,6 +243,15 @@ const WEATHER_CLOUDS: Record<
     light: [1.14, 0.88, 0.64],
     shadow: [0.46, 0.44, 0.52],
     sun: [1.45, 0.86, 0.42],
+  },
+  dusk: {
+    speed: 0.013,
+    coverage: 0.49,
+    opacity: 0.60,
+    sunStrength: 1.28,
+    light: [1.12, 0.56, 0.38],
+    shadow: [0.22, 0.22, 0.36],
+    sun: [1.65, 0.62, 0.24],
   },
   damp: {
     speed: 0.018,

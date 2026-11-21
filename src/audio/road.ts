@@ -1,4 +1,4 @@
-import type { Driver } from '../types';
+import type { Driver, Weather } from '../types';
 import { clamp, Graph, smooth } from './graph';
 
 export function road(g: Graph, mix: AudioNode) {
@@ -31,8 +31,18 @@ export function road(g: Graph, mix: AudioNode) {
   const roofRain = g.gain(mix, 0);
   const roofFilter = g.filter(roofRain, 'highpass', 3200, 0.7);
   g.noise(roofFilter, 1.11);
+  // Carbon-ceramic GT3 brake harmonic chirp when rotors are hot under medium/low-speed braking
+  const brakeSqueal = g.gain(mix, 0);
+  const brakeChirp = g.tone(g.filter(brakeSqueal, 'bandpass', 3150, 4.5), 'sine', 3120);
+  // Subtle cockpit windshield wiper rubber swoosh synced to wet wiper sweep
+  const wiperSwoosh = g.gain(mix, 0);
+  const wiperFilter = g.filter(wiperSwoosh, 'bandpass', 520, 1.6);
+  g.noise(wiperFilter, 0.21);
+  // Distant low-frequency storm thunder rumble in Heavy Rain synced to sheet-lightning
+  const thunder = g.gain(mix, 0);
+  g.noise(g.filter(thunder, 'lowpass', 95, 0.8), 1.43);
 
-  return (p: Driver, cockpit: boolean, wetness: number, now: number) => {
+  return (p: Driver, cockpit: boolean, wetness: number, weather: Weather, now: number) => {
     const damp = wetness > 0.15;
     const speed = clamp(Math.abs(p.speed), 0, 125);
     const airspeed = clamp(speed / 82),
@@ -61,5 +71,32 @@ export function road(g: Graph, mix: AudioNode) {
     smooth(hydroFilter.frequency, 1500 + 2100 * airspeed, now, 0.08);
     smooth(hydro.gain, clamp(wetness) * (cockpit ? 0.24 : 0.38) * clamp(speed / 45) ** 1.35, now, 0.07);
     smooth(roofRain.gain, cockpit && wetness > 0.55 ? (wetness - 0.55) * 0.14 : 0, now, 0.12);
+
+    // Carbon-ceramic brake chirp: audible during medium braking at 12..140 km/h when front rotors are hot
+    const frontTemp = ((p.brakeTempC[0] ?? 170) + (p.brakeTempC[1] ?? 170)) * 0.5;
+    const hotRotor = clamp((frontTemp - 240) / 300);
+    const speedBand = clamp((speed - 3.5) / 6) * clamp((40 - speed) / 14);
+    const brakeBand = brake > 0.12 && brake < 0.82 ? Math.sin(clamp((brake - 0.12) / 0.7) * Math.PI) : 0;
+    smooth(brakeChirp.frequency, 2980 + 340 * clamp(speed / 35), now, 0.04);
+    smooth(brakeSqueal.gain, hotRotor * speedBand * brakeBand * (cockpit ? 0.022 : 0.016), now, 0.035);
+
+    // Cockpit wiper blade rhythmic swoosh in Rain / Damp
+    const wiperActive = cockpit && (weather === 'rain' || weather === 'damp');
+    const wiperPulse =
+      weather === 'rain'
+        ? Math.abs(Math.cos(now * 2.15)) ** 2.4
+        : (now % 3.4) < 1.25
+          ? Math.abs(Math.sin(((now % 3.4) / 1.25) * Math.PI * 2)) ** 2.0
+          : 0;
+    smooth(wiperFilter.frequency, 440 + 280 * wiperPulse, now, 0.04);
+    smooth(wiperSwoosh.gain, wiperActive ? wiperPulse * 0.032 : 0, now, 0.045);
+
+    // Distant storm thunder rumble in Heavy Rain (~11.4s lightning period, delayed ~0.5s after flash)
+    const thunderCycle = now % 11.4;
+    const rumble =
+      weather === 'rain' && thunderCycle > 0.25 && thunderCycle < 2.6
+        ? Math.sin(((thunderCycle - 0.25) / 2.35) * Math.PI) * 0.11 * (cockpit ? 0.7 : 1.0)
+        : 0;
+    smooth(thunder.gain, rumble, now, 0.14);
   };
 }

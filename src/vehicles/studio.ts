@@ -594,7 +594,8 @@ export function studio(scene: Scene, chassis: Chassis): Promise<Studio> {
 
 async function load(scene: Scene, chassis: Chassis): Promise<Studio> {
   const name = chassis === '458' ? 'ferrari_base' : 'car_concept_base';
-  const response = await fetch(`/assets/models/${name}.glb`);
+  const url = new URL(`${import.meta.env.BASE_URL}assets/models/${name}.glb`, window.location.href).href;
+  const response = await fetch(url);
   if (!response.ok) throw Error(`Studio chassis ${name} could not be loaded (HTTP ${response.status})`);
   const container = await LoadAssetContainerAsync(new Uint8Array(await response.arrayBuffer()), scene, {
     name: name + '.glb',

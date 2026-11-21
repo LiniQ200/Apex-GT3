@@ -24,7 +24,7 @@ export async function studioWheelLayouts(scene: Scene, { chassis, mode }: Pick<S
 
 export async function createStudioView(element: HTMLCanvasElement, circuit: Circuit, fallback?: string): Promise<DrivingView> {
   const { scene, engine, canvas, backend, adapter, software, reason, deviceLost } = await bootstrap(element, fallback);
-  let rigs: VehicleRig[] = [], generation = 0, raf = 0, suspended = false;
+  let rigs: VehicleRig[] = [], generation = 0, raf = 0, yieldTimer = 0, suspended = false;
   function discard() {
     for (const rig of rigs) rig.dispose();
     rigs = [];
@@ -33,6 +33,7 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
     if (engine.isDisposed) return;
     generation++;
     cancelAnimationFrame(raf);
+    clearTimeout(yieldTimer);
     try {
       discard();
       scene.dispose();
@@ -91,10 +92,12 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
       if (backend === 'WebGPU') return;
       for (const m of scene.materials) {
         if (m.name === 'HDR sky' || m.name === 'rear vision glass' || m.name === 'instrument anti-glare LCD' ||
+            m.name === 'cockpit windshield rain' ||
             m.name.startsWith('weather.') || m.name.includes('.LED tail') || m.name.includes('.rain') ||
             m.name.includes('.disc') || m.name === 'venue.asphalt' || m.name === 'venue.terrain' ||
             m.name === 'venue.distant pasture' || m.name === 'venue.Mediterranean canopy' ||
             m.name === 'venue.Mediterranean bark' || m.name === 'venue.circuitFlags' ||
+            m.name === 'venue.raceControlGlass' || m.name === 'venue.floodlightLamps' || m.name === 'venue.pitGlow' ||
             m.name.startsWith('venue.biome.') ||
             m.name === 'venue.gravel' || m.name === 'venue.concrete' || m.name === 'venue.kerb' ||
             m.name === 'venue.track enamel' || m.name === 'venue.FIA digital flag panel' ||
@@ -138,23 +141,26 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
         rigs = group;
         rigs.forEach((rig, i) => rig.update(s.drivers[i], 0, false, s.settings.weather));
         light.casters(scene.meshes.filter(m => !(s.phase === 'garage' && m.name.startsWith('garage.'))));
-        // Freeze static materials immediately after the first rendered frame so steady-state CPU cost drops ~65%
-        scene.onAfterRenderObservable.addOnce(() => {
+        // Freeze static materials only after all shaders finish compiling so steady-state CPU cost drops ~65%
+        void whenSceneReady(scene).then(() => {
           if (token === generation && !scene.isDisposed) freezeStaticMaterials(true);
-        });
+        }).catch(() => {});
       },
       confirmPicture() {
         return pending ??= check().finally(() => { pending = undefined; });
       },
       async setWeather(w) {
+        // Load & rotate sun/sky first so sky decode finishes immediately and scene.metadata.sunDir is current.
+        await light.setWeather(w);
+        if (scene.isDisposed) return;
         freezeStaticMaterials(false);
         setCarPaintWetness(scene, w === 'rain' ? 0.92 : w === 'damp' ? 0.45 : 0);
         track?.setWeather(w);
-        await light.setWeather(w);
-        if (!scene.isDisposed && rigs.length) {
-          scene.onAfterRenderObservable.addOnce(() => {
-            if (!scene.isDisposed) freezeStaticMaterials(true);
-          });
+        if (rigs.length) {
+          const token = generation;
+          void whenSceneReady(scene).then(() => {
+            if (token === generation && !scene.isDisposed) freezeStaticMaterials(true);
+          }).catch(() => {});
         }
       },
       quality: light.quality,
@@ -174,6 +180,7 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
         // buffer there, after Babylon's normal render-loop callback returns.
         function render() {
           if (engine.isDisposed) return;
+          const t0 = software ? performance.now() : 0;
           try {
             if (!suspended && !document.hidden && rigs.length) {
               engine.beginFrame();
@@ -181,7 +188,13 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
               engine.endFrame();
             }
           } catch (error) { failed(error); return; }
-          raf = requestAnimationFrame(render);
+          if (software && performance.now() - t0 > 50) {
+            yieldTimer = window.setTimeout(() => {
+              if (!engine.isDisposed) raf = requestAnimationFrame(render);
+            }, 0);
+          } else {
+            raf = requestAnimationFrame(render);
+          }
         }
         raf = requestAnimationFrame(render);
       },

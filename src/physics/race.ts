@@ -196,7 +196,15 @@ export function createRace(
               : 'medium';
       const d = driver(i, (i + state.settings.livery) % 5, comp);
       d.distance = box.s;
-      world.add(d, box.s, box.d, wheelLayouts?.(i));
+      const chassis = i === 0 ? state.settings.chassis : i % 2 ? 'concept' : '458';
+      world.add(
+        d,
+        box.s,
+        box.d,
+        wheelLayouts?.(i),
+        chassis,
+        i === 0 ? { aeroWing: state.settings.aeroWing, brakeBias: state.settings.brakeBias } : undefined,
+      );
       state.drivers.push(d);
       stalled.push(0);
       pitCooldown.push(0);

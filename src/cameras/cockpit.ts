@@ -8,10 +8,13 @@ import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder';
 import { CreatePlane } from '@babylonjs/core/Meshes/Builders/planeBuilder';
 import type { Material } from '@babylonjs/core/Materials/material';
 import { ImageProcessingConfiguration } from '@babylonjs/core/Materials/imageProcessingConfiguration';
+import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
+import { RawTexture } from '@babylonjs/core/Materials/Textures/rawTexture';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
-import type { Driver } from '../types';
+import type { Driver, Weather } from '../types';
+import { WindshieldRainPlugin } from '../materials/windshieldShader';
 import { createRearVision } from './rearVision';
 
 // Instrument pod, in metres. Three octagonal rings give the aluminium flange,
@@ -97,14 +100,27 @@ function instruments(scene: Scene, concept: boolean) {
   };
   return {
     texture,
-    update(d: Driver, now: number) {
+    update(d: Driver, now: number, delta = 0, tc = 3, abs = 2) {
       if (now < next) return;
       next = now + 50;
       const rpm = Math.round(d.rpm / 50) * 50,
         speed = Math.round(d.speed * 3.6),
         brake = Math.round(Math.min(1, Math.max(0, d.brake)) * 100);
       const limFlash = d.pitLimiter ? Math.floor(now / 200) % 2 : -1;
-      const readout = [d.gear, rpm, speed, brake, d.absActive, limFlash].join('/');
+      const deltaTenth = Number.isFinite(delta) ? Math.round(delta * 10) : 0;
+      const readout = [
+        d.gear,
+        rpm,
+        speed,
+        brake,
+        d.absActive,
+        d.tcActive,
+        d.compound,
+        tc,
+        abs,
+        deltaTenth,
+        limFlash,
+      ].join('/');
       if (last === readout) return;
       last = readout;
       rect('#0d141a', 0, 0, 704, 256);
@@ -135,10 +151,25 @@ function instruments(scene: Scene, concept: boolean) {
       c.textAlign = 'right';
       text(`${brake}%`, 651, 210, 31, brake ? hot : '#c0cdc7');
       c.textAlign = 'left';
-      rect('#233438', 24, 228, 656, 2);
-      text(concept ? 'P / 01     ENDURANCE' : 'GT / 08     CORSA', 29, 249, 16, '#8ba2a2');
+      rect('#233438', 24, 226, 656, 2);
+      // Live GT3 telemetry footer arranged inside the left/right cutouts of the steering wheel rim
+      const compColor = d.compound === 'wet' ? '#4db8ff' : d.compound === 'medium' ? '#ffd662' : '#ff6b57';
+      const compLabel = d.compound === 'wet' ? 'WET' : d.compound === 'medium' ? 'MED' : 'SOFT';
+      text(concept ? 'P/01' : 'GT/08', 26, 249, 15, '#8ba2a2');
+      rect(compColor, 84, 232, 54, 20);
+      c.textAlign = 'center';
+      text(compLabel, 111, 247, 14, '#0c1519');
+      rect(d.tcActive ? '#ffb84d' : '#1b2830', 146, 232, 56, 20);
+      text(`TC${tc}`, 174, 247, 14, d.tcActive ? '#0c1519' : '#9bb3b3');
+      rect(d.absActive ? '#ff6d58' : '#1b2830', 208, 232, 62, 20);
+      text(`ABS${abs}`, 239, 247, 14, d.absActive ? '#0c1519' : '#9bb3b3');
       c.textAlign = 'right';
-      text('RACE   •   DATA SYSTEMS', 676, 249, 16, '#8ba2a2');
+      const deltaStr =
+        deltaTenth === 0
+          ? 'Δ 0.0s'
+          : `${deltaTenth > 0 ? '+' : '−'}${(Math.abs(deltaTenth) / 10).toFixed(1)}s`;
+      text(deltaStr, 578, 249, 16, deltaTenth < 0 ? '#71f0ac' : deltaTenth > 0 ? '#ff6d58' : '#b7c7c4');
+      text(`${Math.round(d.fuelL)}L`, 676, 249, 16, d.fuelL < 8 ? '#ff6d58' : '#8ba2a2');
       c.textAlign = 'left';
       texture.update(true);
     },
@@ -216,6 +247,219 @@ function fit458Mirrors(mount: TransformNode, body: TransformNode, glass: Materia
   return centre;
 }
 
+/**
+ * Extract the donor's exact front windshield triangles facing inward toward the driver eye
+ * (for crisp WGSL + GLSL raindrops & wiper arc with zero dry-weather overdraw) and mount
+ * a synchronized 3D GT3 single-arm carbon wiper blade along the windshield rake.
+ */
+function fitWindshieldRain(
+  scene: Scene,
+  mount: TransformNode,
+  body: TransformNode,
+  shell: StandardMaterial,
+  concept: boolean,
+) {
+  const unitTex = RawTexture.CreateRGBATexture(
+    new Uint8Array([255, 255, 255, 255]),
+    1,
+    1,
+    scene,
+    false,
+    false,
+    Texture.NEAREST_SAMPLINGMODE,
+  );
+  unitTex.name = 'cockpit windshield rain uv anchor';
+  const rainMat = new PBRMaterial('cockpit windshield rain', scene);
+  rainMat.unlit = true;
+  rainMat.albedoColor = Color3.Black();
+  rainMat.albedoTexture = unitTex;
+  rainMat.transparencyMode = PBRMaterial.PBRMATERIAL_ALPHABLEND;
+  rainMat.disableDepthWrite = true;
+  rainMat.backFaceCulling = false;
+  rainMat.maxSimultaneousLights = 0;
+  const plugin = new WindshieldRainPlugin(rainMat);
+
+  const glassMesh = body.getChildMeshes(true).find((m) => m.name.endsWith('.body.glass'));
+  const p = glassMesh?.getVerticesData('position');
+  const n = glassMesh?.getVerticesData('normal');
+  const ids = glassMesh?.getIndices();
+
+  const positions: number[] = [],
+    normals: number[] = [],
+    uvs: number[] = [],
+    indices: number[] = [];
+  let minX = Infinity,
+    maxX = -Infinity,
+    minY = Infinity,
+    maxY = -Infinity,
+    minZ = Infinity,
+    maxZ = -Infinity;
+
+  if (p && n && ids) {
+    const kept: number[] = [];
+    for (let i = 0; i < ids.length; i += 3) {
+      const a = 3 * ids[i],
+        b = 3 * ids[i + 1],
+        c = 3 * ids[i + 2];
+      const avgNz = (n[a + 2] + n[b + 2] + n[c + 2]) / 3;
+      const avgNy = (n[a + 1] + n[b + 1] + n[c + 1]) / 3;
+      const avgZ = (p[a + 2] + p[b + 2] + p[c + 2]) / 3;
+      const avgY = (p[a + 1] + p[b + 1] + p[c + 1]) / 3;
+      // Front raked windshield faces forward (+Z) and upward (+Y) in front of the steering column
+      if (avgNz > 0.22 && avgNy > 0.18 && avgZ > mount.position.z - 0.18 && avgY > mount.position.y - 0.14) {
+        kept.push(a, b, c);
+        for (const j of [a, b, c]) {
+          minX = Math.min(minX, p[j]);
+          maxX = Math.max(maxX, p[j]);
+          minY = Math.min(minY, p[j + 1]);
+          maxY = Math.max(maxY, p[j + 1]);
+          minZ = Math.min(minZ, p[j + 2]);
+          maxZ = Math.max(maxZ, p[j + 2]);
+        }
+      }
+    }
+    const spanX = Math.max(0.4, maxX - minX);
+    const spanY = Math.max(0.25, maxY - minY);
+    for (let i = 0; i < kept.length; i += 3) {
+      // Reverse winding so inward face confronts driver helmet cleanly
+      const tri = [kept[i], kept[i + 2], kept[i + 1]];
+      for (const j of tri) {
+        indices.push(indices.length);
+        positions.push(
+          p[j] - mount.position.x - n[j] * 0.005,
+          p[j + 1] - mount.position.y - n[j + 1] * 0.005,
+          p[j + 2] - mount.position.z - n[j + 2] * 0.005,
+        );
+        normals.push(-n[j], -n[j + 1], -n[j + 2]);
+        uvs.push((p[j] - minX) / spanX, (p[j + 1] - minY) / spanY);
+      }
+    }
+  }
+
+  let rainMesh: Mesh;
+  let wiperOrigin: Vector3;
+  let wiperRake: number;
+  let wiperLen: number;
+
+  if (positions.length > 0) {
+    rainMesh = new Mesh('cockpit windshield rain layer', scene);
+    const vd = new VertexData();
+    vd.positions = positions;
+    vd.normals = normals;
+    vd.uvs = uvs;
+    vd.indices = indices;
+    vd.applyToMesh(rainMesh);
+    rainMesh.parent = mount;
+    wiperOrigin = new Vector3(
+      0.5 * (minX + maxX) - mount.position.x,
+      minY - mount.position.y + 0.015,
+      maxZ - mount.position.z - 0.012,
+    );
+    const dy = Math.max(0.22, maxY - minY);
+    const dz = Math.max(0.25, maxZ - minZ);
+    wiperRake = Math.atan2(dz, dy);
+    wiperLen = Math.min(0.68, Math.hypot(dy, dz) * 0.84);
+  } else {
+    // Fallback raked windshield quad if donor glass had no separated front pane
+    rainMesh = CreatePlane('cockpit windshield rain layer', { width: 1.18, height: 0.62 }, scene);
+    rainMesh.parent = mount;
+    rainMesh.position.set(0, concept ? 0.56 : 0.25, concept ? 0.24 : 0.34);
+    rainMesh.rotation.x = 0.96;
+    wiperOrigin = new Vector3(0, concept ? 0.38 : 0.06, concept ? 0.48 : 0.58);
+    wiperRake = 0.96;
+    wiperLen = 0.52;
+  }
+  rainMesh.material = rainMat;
+  rainMesh.isPickable = false;
+  rainMesh.metadata = { noShadowCaster: true };
+  rainMesh.setEnabled(false);
+
+  // 3D GT3 Endurance Single-Arm Carbon Wiper mounted on cowl rake
+  const wiperMount = new TransformNode('cockpit wiper rake', scene);
+  wiperMount.parent = mount;
+  wiperMount.position.copyFrom(wiperOrigin);
+  wiperMount.rotation.x = -wiperRake;
+
+  const wiperPivot = new TransformNode('cockpit wiper pivot', scene);
+  wiperPivot.parent = wiperMount;
+
+  const arm = CreateBox('cockpit wiper arm', { width: 0.014, height: wiperLen * 0.62, depth: 0.01 }, scene);
+  arm.parent = wiperPivot;
+  arm.position.set(0, wiperLen * 0.31, -0.008);
+  arm.material = shell;
+  arm.isPickable = false;
+  arm.metadata = { noShadowCaster: true };
+
+  const blade = CreateBox('cockpit wiper blade', { width: 0.011, height: wiperLen * 0.56, depth: 0.014 }, scene);
+  blade.parent = wiperPivot;
+  blade.position.set(0, wiperLen * 0.68, -0.004);
+  blade.material = shell;
+  blade.isPickable = false;
+  blade.metadata = { noShadowCaster: true };
+
+  wiperMount.setEnabled(false);
+
+  let rainClock = 0;
+  let wiperClock = 0;
+  let lastAngle = 0;
+
+  return {
+    update(weather: Weather, speedMs: number, dt: number, sprayAhead: number) {
+      const isRain = weather === 'rain';
+      const isDamp = weather === 'damp';
+      const wet = isRain || isDamp;
+      if (rainMesh.isEnabled() !== wet) rainMesh.setEnabled(wet);
+      if (wiperMount.isEnabled() !== wet) wiperMount.setEnabled(wet);
+      if (!wet) return;
+
+      const step = Math.max(0, Math.min(0.1, dt));
+      rainClock += step;
+      // Continuous fast endurance sweep in Heavy Rain; crisp intermittent wipe every 3.4s in Damp
+      let angle = -1.04;
+      let dir = 1;
+      let active = 0;
+      if (isRain) {
+        wiperClock += step * 2.15;
+        angle = Math.sin(wiperClock) * 1.04;
+        dir = Math.cos(wiperClock) >= 0 ? 1 : -1;
+        active = 1;
+      } else {
+        wiperClock += step;
+        const cycle = wiperClock % 3.4;
+        if (cycle < 1.25) {
+          const u = cycle / 1.25;
+          angle = -Math.cos(u * Math.PI * 2) * 1.04;
+          dir = u < 0.5 ? 1 : -1;
+          active = 0.85;
+        } else {
+          angle = -1.04;
+          dir = 1;
+          active = 0.35;
+        }
+      }
+      if (Math.abs(angle - lastAngle) > 1e-4) {
+        dir = angle >= lastAngle ? 1 : -1;
+      }
+      lastAngle = angle;
+
+      wiperPivot.rotation.z = -angle;
+      plugin.time = rainClock;
+      plugin.intensity = isRain ? 0.94 : 0.44;
+      plugin.speedNorm = Math.max(0, Math.min(1, speedMs / 72));
+      plugin.wiperAngle = angle;
+      plugin.wiperActive = active;
+      plugin.wiperDir = dir;
+      plugin.sprayBoost = sprayAhead;
+      if (isRain) plugin.skyColor = [0.56, 0.62, 0.70];
+      else plugin.skyColor = [0.76, 0.81, 0.88];
+    },
+    dispose() {
+      unitTex.dispose();
+      if (scene.materials.includes(rainMat)) rainMat.dispose();
+    },
+  };
+}
+
 function fitCockpit(scene: Scene, column: TransformNode) {
   const body = column.parent as TransformNode,
     concept = body.parent!.metadata.sourceChassis === 'concept';
@@ -228,7 +472,8 @@ function fitCockpit(scene: Scene, column: TransformNode) {
   shell.diffuseColor.set(0.064, 0.074, 0.081);
   shell.specularColor.set(0.2, 0.23, 0.25);
   const cluster = instruments(scene, concept),
-    rear = createRearVision(scene, mount);
+    rear = createRearVision(scene, mount),
+    windshield = fitWindshieldRain(scene, mount, body, shell, concept);
   const lcd = new StandardMaterial('instrument anti-glare LCD', scene);
   lcd.disableLighting = true;
   lcd.emissiveColor = Color3.White();
@@ -263,6 +508,7 @@ function fitCockpit(scene: Scene, column: TransformNode) {
   const worldEye = new Vector3();
   mount.onDisposeObservable.addOnce(() => {
     rear.dispose();
+    windshield.dispose();
     cluster.texture.dispose();
     // Scene disposal may already have released materials before its nodes.
     if (scene.materials.includes(lcd)) {
@@ -273,12 +519,22 @@ function fitCockpit(scene: Scene, column: TransformNode) {
   });
   return {
     mount,
-    update(driver: Driver, live: boolean) {
+    update(
+      driver: Driver,
+      live: boolean,
+      weather: Weather,
+      dt: number,
+      delta: number,
+      tc: number,
+      abs: number,
+      sprayAhead: number,
+    ) {
       if (!mount.isEnabled()) mount.setEnabled(true);
       Vector3.TransformCoordinatesToRef(eye, mount.computeWorldMatrix(true), worldEye);
       const now = performance.now();
-      cluster.update(driver, now);
+      cluster.update(driver, now, delta, tc, abs);
       rear.refresh(now, live);
+      windshield.update(weather, driver.speed, live ? dt : 0, sprayAhead);
       return worldEye;
     },
     suspend() {
@@ -292,7 +548,17 @@ function fitCockpit(scene: Scene, column: TransformNode) {
 
 export function createCockpit(scene: Scene) {
   let installed: ReturnType<typeof fitCockpit> | undefined;
-  return (driver: Driver | undefined, active: boolean, live: boolean) => {
+  return (
+    driver: Driver | undefined,
+    active: boolean,
+    live: boolean,
+    weather: Weather = 'golden',
+    dt = 0,
+    delta = 0,
+    tc = 3,
+    abs = 2,
+    sprayAhead = 0,
+  ) => {
     if (!active || !driver) {
       installed?.suspend();
       return;
@@ -310,6 +576,6 @@ export function createCockpit(scene: Scene) {
         installed = undefined;
       });
     }
-    return installed.update(driver, live);
+    return installed.update(driver, live, weather, dt, delta, tc, abs, sprayAhead);
   };
 }

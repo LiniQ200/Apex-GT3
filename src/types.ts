@@ -1,7 +1,7 @@
 import type { Scene } from '@babylonjs/core/scene';
 import type { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 
-export type Weather = 'clear' | 'golden' | 'damp' | 'rain';
+export type Weather = 'clear' | 'golden' | 'dusk' | 'damp' | 'rain';
 export type TireCompound = 'soft' | 'medium' | 'wet';
 export type CameraMode = 'chase' | 'cockpit' | 'hood' | 'tv';
 export type Phase = 'garage' | 'lights' | 'race' | 'paused' | 'finished';
@@ -20,6 +20,8 @@ export interface Settings {
   livery: number;
   weather: Weather;
   compound: TireCompound;
+  aeroWing: 'low' | 'balanced' | 'high';
+  brakeBias: '54' | '57' | '60';
   mode: 'sprint' | 'hotlap';
   pace: 'clubman' | 'pro' | 'platinum';
   transmission: 'auto' | 'manual';
@@ -32,6 +34,8 @@ export const defaults: Settings = {
   livery: 0,
   weather: 'golden',
   compound: 'soft',
+  aeroWing: 'balanced',
+  brakeBias: '57',
   mode: 'sprint',
   pace: 'pro',
   transmission: 'auto',

@@ -41,6 +41,7 @@ const shaderChunk: GetManualChunk = (id, { getModuleInfo }) => {
 // and physics imports are only hinted when Drive actually asks for the road.
 const preload = new Map<string, string[]>();
 export default defineConfig({
+  base: process.env.VITE_BASE || './',
   server: host,
   preview: host,
   build: {

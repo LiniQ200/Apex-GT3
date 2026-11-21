@@ -34,7 +34,7 @@ function mixer(g: Graph) {
     if (!active || !p) return;
     const cockpit = s.camera === 'cockpit';
     motor(p, s.settings.chassis, cockpit, now, fresh);
-    tires(p, cockpit, s.trackWetness, now);
+    tires(p, cockpit, s.trackWetness, s.settings.weather, now);
     rivals(s.drivers, p, cockpit, now);
     pit(s.pitEvent, now);
   };

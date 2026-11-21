@@ -30,25 +30,37 @@ fn cfHash3(pIn: vec3f) -> f32 {
 
 const carGlslApply = `#ifdef CAR_FINISH_FX
 {
-  // Procedural metallic flake micro-glint + rain-slicked clearcoat water beading
+  // Automotive dual-tone metallic paint flop + multi-scale clearcoat aluminum-flake sparkle
   vec3 vDir = normalize(vEyePosition.xyz - vPositionW);
   float ndv = clamp(dot(normalW, vDir), 0.0, 1.0);
-  vec3 cell = floor(vPositionW * 420.0);
-  float flk = cfHash3(cell);
-  float glint = step(0.86, flk) * pow(1.0 - ndv, 1.35) * (0.28 + 0.72 * ndv);
-  surfaceAlbedo += surfaceAlbedo * (glint * 0.36);
-  // Dynamic wet-weather bodywork sheen & raindrop beading micro-sparkle
+  float flop = pow(1.0 - ndv, 2.1);
+  // Deep rich face tone at perpendicular angles, luminous metallic flop toward grazing curves
+  float flopScale = mix(0.90, 1.24, flop);
+  surfaceAlbedo *= flopScale;
+  reflectivityOut.colorReflectanceF0 *= mix(0.94, 1.28, flop);
+
+  float flk = step(0.87, cfHash3(floor(vPositionW * 420.0)));
+  float glint = flk * pow(1.0 - ndv, 1.15) * (0.30 + 0.70 * ndv);
+  vec3 flakeLift = (surfaceAlbedo * 0.65 + reflectivityOut.colorReflectanceF0 * 0.55 + vec3(0.06)) * (glint * 0.42);
+  surfaceAlbedo += flakeLift;
+  reflectivityOut.colorReflectanceF0 += flakeLift * 0.75;
+
+  // Dynamic wet-weather bodywork sheeting & raindrop clearcoat beading micro-sparkle
   float carWet = carFinishParams.x;
   if (carWet > 0.05) {
-    float bead = step(0.90, cfHash3(floor(vPositionW * 165.0)));
-    surfaceAlbedo *= mix(1.0, 0.88, carWet);
-    roughness = mix(roughness, 0.09, carWet * 0.72);
+    float bead = step(0.88, cfHash3(floor(vPositionW * 155.0)));
+    surfaceAlbedo *= mix(1.0, 0.84, carWet);
+    roughness = mix(roughness, 0.045, carWet * 0.82);
     microSurface = 1.0 - roughness;
-    surfaceAlbedo += vec3(0.14) * (bead * carWet * pow(1.0 - ndv, 1.8));
+    vec3 beadSpec = vec3(0.18) * (bead * carWet * pow(1.0 - ndv, 1.65));
+    surfaceAlbedo += beadSpec;
+    reflectivityOut.colorReflectanceF0 += vec3(0.045 * carWet);
   }
-  // Subtle curved body-bottom ambient occlusion (grounds diffuser, sills, and front splitter)
-  float lowAo = smoothstep(0.03, 0.42, max(0.0, vPositionW.y));
-  surfaceAlbedo *= mix(0.76, 1.0, lowAo * 0.65 + 0.35);
+  // Tighter curved body-bottom ambient occlusion (grounds diffuser, sills, and front splitter)
+  float lowAo = smoothstep(0.02, 0.46, max(0.0, vPositionW.y));
+  float aoFactor = mix(0.68, 1.0, lowAo * 0.72 + 0.28);
+  surfaceAlbedo *= aoFactor;
+  reflectivityOut.colorReflectanceF0 *= mix(0.74, 1.0, lowAo);
 }
 #endif
 #include<pbrBlockGeometryInfo>`;
@@ -57,20 +69,31 @@ const carWgslApply = `#ifdef CAR_FINISH_FX
 {
   let vDir = normalize(scene.vEyePosition.xyz - input.vPositionW);
   let ndv = clamp(dot(normalW, vDir), 0.0, 1.0);
-  let cell = floor(input.vPositionW * 420.0);
-  let flk = cfHash3(cell);
-  let glint = step(0.86, flk) * pow(1.0 - ndv, 1.35) * (0.28 + 0.72 * ndv);
-  surfaceAlbedo += surfaceAlbedo * (glint * 0.36);
+  let flop = pow(1.0 - ndv, 2.1);
+  let flopScale = mix(0.90, 1.24, flop);
+  surfaceAlbedo *= flopScale;
+  reflectivityOut.colorReflectanceF0 *= mix(0.94, 1.28, flop);
+
+  let flk = step(0.87, cfHash3(floor(input.vPositionW * 420.0)));
+  let glint = flk * pow(1.0 - ndv, 1.15) * (0.30 + 0.70 * ndv);
+  let flakeLift = (surfaceAlbedo * 0.65 + reflectivityOut.colorReflectanceF0 * 0.55 + vec3f(0.06)) * (glint * 0.42);
+  surfaceAlbedo += flakeLift;
+  reflectivityOut.colorReflectanceF0 += flakeLift * 0.75;
+
   let carWet = uniforms.carFinishParams.x;
   if (carWet > 0.05) {
-    let bead = step(0.90, cfHash3(floor(input.vPositionW * 165.0)));
-    surfaceAlbedo *= mix(1.0, 0.88, carWet);
-    roughness = mix(roughness, 0.09, carWet * 0.72);
+    let bead = step(0.88, cfHash3(floor(input.vPositionW * 155.0)));
+    surfaceAlbedo *= mix(1.0, 0.84, carWet);
+    roughness = mix(roughness, 0.045, carWet * 0.82);
     microSurface = 1.0 - roughness;
-    surfaceAlbedo += vec3f(0.14) * (bead * carWet * pow(1.0 - ndv, 1.8));
+    let beadSpec = vec3f(0.18) * (bead * carWet * pow(1.0 - ndv, 1.65));
+    surfaceAlbedo += beadSpec;
+    reflectivityOut.colorReflectanceF0 += vec3f(0.045 * carWet);
   }
-  let lowAo = smoothstep(0.03, 0.42, max(0.0, input.vPositionW.y));
-  surfaceAlbedo *= mix(0.76, 1.0, lowAo * 0.65 + 0.35);
+  let lowAo = smoothstep(0.02, 0.46, max(0.0, input.vPositionW.y));
+  let aoFactor = mix(0.68, 1.0, lowAo * 0.72 + 0.28);
+  surfaceAlbedo *= aoFactor;
+  reflectivityOut.colorReflectanceF0 *= mix(0.74, 1.0, lowAo);
 }
 #endif
 #include<pbrBlockGeometryInfo>`;
