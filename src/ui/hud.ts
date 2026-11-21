@@ -330,7 +330,21 @@ export function createHud(el: HTMLElement, circuit: Circuit, outline: ReturnType
     tc.classList.toggle('intervening', player.tcActive);
     abs.classList.toggle('intervening', player.absActive);
     pitLimBtn.classList.toggle('intervening', player.pitLimiter);
-    write('surface', player.surface.toUpperCase());
+    // Live slipstream tow indicator when drafting a rival within 26 m ahead at racing speed
+    let drafting = false;
+    if (player.speed > 36 && s.drivers.length > 1) {
+      for (const r of s.drivers) {
+        if (r.id === 0) continue;
+        let gap = r.s - player.s;
+        if (gap < -circuit.length / 2) gap += circuit.length;
+        else if (gap > circuit.length / 2) gap -= circuit.length;
+        if (gap > 3.5 && gap < 26 && Math.abs(r.d - player.d) < 3.0) {
+          drafting = true;
+          break;
+        }
+      }
+    }
+    write('surface', drafting ? `TOW · ${player.surface.toUpperCase()}` : player.surface.toUpperCase());
   }
   return { update, reset };
 }

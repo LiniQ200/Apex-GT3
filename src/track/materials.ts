@@ -8,6 +8,7 @@ import type { Circuit, Weather } from '../types';
 import { groove } from './circuit';
 import { TrackSurfaceGrid, weatherBaseWetness } from './surfaceState';
 import { PorousSurfacePlugin } from './trackShader';
+import { TerrainTriplanarPlugin } from './terrainShader';
 
 export function randomSource(seed: number) {
   return () => {
@@ -208,48 +209,65 @@ export function roadMaterials(scene: Scene, c: Circuit, surfaceGrid?: TrackSurfa
   road.detailMap.diffuseBlendLevel = 0.85;
   road.detailMap.isEnabled = true;
 
-  // Cross-backend WGSL + GLSL Hex-Grid Stochastic Anti-Tiling on hero asphalt;
-  // single-tap porous wetness darkening on grass/gravel/concrete for high frame rates!
+  // Cross-backend WGSL + GLSL Hex-Grid Stochastic Anti-Tiling + raindrop ripples on hero asphalt;
+  // multi-biome limestone-slope & cloud-shadow shader on Tuscan grass & hills;
+  // porous wetness darkening on gravel/concrete.
   const roadPlugin = new PorousSurfacePlugin(road, { isRoad: true, hexBomb: true, trackStateTexture: stateTex });
-  const grassPlugin = new PorousSurfacePlugin(grass, { isRoad: false, hexBomb: false });
+  const terrainPlugin = new TerrainTriplanarPlugin(grass);
   const gravelPlugin = new PorousSurfacePlugin(gravel, { isRoad: false, hexBomb: false });
   const concretePlugin = new PorousSurfacePlugin(concrete, { isRoad: false, hexBomb: false });
+  const hillPlugins: TerrainTriplanarPlugin[] = [terrainPlugin];
 
   kerb.albedoTexture!.level = 1.16;
-  grass.albedoColor = new Color3(0.54, 0.90, 0.62);
-  grass.bumpTexture!.level = 0.55;
+  grass.albedoColor = new Color3(0.62, 0.92, 0.64);
+  grass.bumpTexture!.level = 0.62;
   gravel.albedoColor = new Color3(0.95, 0.87, 0.74);
-  gravel.bumpTexture!.level = 0.72;
+  gravel.bumpTexture!.level = 0.76;
 
   const paint = plain(scene, 'track enamel', 0.68);
   const wall = metal;
   wall.albedoColor = new Color3(0.88, 0.90, 0.91);
   wall.metallic = 0.58;
   wall.roughness = 0.52;
-  wall.bumpTexture!.level = 0.25;
+  wall.bumpTexture!.level = 0.28;
 
+  let shaderClock = 0;
   const setWeather = (w: Weather) => {
     const wet = w === 'damp' || w === 'rain';
     const rain = w === 'rain';
     const ambWet = weatherBaseWetness[w];
+    const cloudStr = w === 'clear' ? 0.24 : w === 'golden' ? 0.44 : w === 'damp' ? 0.56 : 0.34;
     roadPlugin.ambientWetness = ambWet;
-    grassPlugin.ambientWetness = ambWet * 0.75;
+    roadPlugin.cloudShadowStrength = cloudStr;
     gravelPlugin.ambientWetness = ambWet * 0.85;
+    gravelPlugin.cloudShadowStrength = cloudStr;
     concretePlugin.ambientWetness = ambWet * 0.9;
+    concretePlugin.cloudShadowStrength = cloudStr;
+    for (const hp of hillPlugins) {
+      hp.wetness = ambWet * 0.8;
+      hp.cloudShadowStrength = cloudStr;
+    }
 
     // Preserve dry grey stone albedo; PorousSurfacePlugin handles physical Beer-Lambert pore darkening
     road.albedoColor.setAll(0.92);
     road.indexOfRefraction = wet ? 1.38 : 1.5;
     road.roughness = 1;
-    road.bumpTexture!.level = rain ? 0.56 : wet ? 0.62 : 0.72;
-    kerb.roughness = rain ? 0.42 : wet ? 0.54 : 0.91;
-    paint.roughness = rain ? 0.36 : wet ? 0.48 : 0.74;
+    road.bumpTexture!.level = rain ? 0.56 : wet ? 0.64 : 0.76;
+    kerb.roughness = rain ? 0.38 : wet ? 0.52 : 0.90;
+    paint.roughness = rain ? 0.34 : wet ? 0.46 : 0.74;
     if (grid.syncBytes()) stateTex.update(grid.rgba);
   };
 
   let uploadCooldown = 0;
   const syncSurface = (dt: number) => {
-    uploadCooldown -= dt;
+    const clamped = Math.max(0, Math.min(0.1, dt));
+    shaderClock += clamped;
+    roadPlugin.time = shaderClock;
+    gravelPlugin.time = shaderClock;
+    concretePlugin.time = shaderClock;
+    for (const hp of hillPlugins) hp.time = shaderClock;
+
+    uploadCooldown -= clamped;
     if (uploadCooldown <= 0) {
       uploadCooldown = 0.22; // ~4.5 Hz live GPU update for drying groove & rubbering-in
       if (grid.syncBytes()) stateTex.update(grid.rgba);
@@ -257,7 +275,26 @@ export function roadMaterials(scene: Scene, c: Circuit, surfaceGrid?: TrackSurfa
   };
 
   setWeather('golden');
-  return { road, grass, kerb, concrete, gravel, paint, wall, setWeather, syncSurface, grid };
+  return {
+    road,
+    grass,
+    kerb,
+    concrete,
+    gravel,
+    paint,
+    wall,
+    setWeather,
+    syncSurface,
+    grid,
+    attachTerrainShader(mat: PBRMaterial) {
+      const p = new TerrainTriplanarPlugin(mat);
+      p.wetness = terrainPlugin.wetness;
+      p.cloudShadowStrength = terrainPlugin.cloudShadowStrength;
+      p.time = shaderClock;
+      hillPlugins.push(p);
+      return p;
+    },
+  };
 }
 
 // One mipmapped print sheet: all billboards, suites, distance boards and garage

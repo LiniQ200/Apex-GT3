@@ -24,6 +24,7 @@ import {
 import { geometry, vertex, quad, point, type Geometry as RawGeom, type Vec } from './road';
 import { plain, signage, randomSource, type roadMaterials } from './materials';
 import { bakeGltfVertexData, createBotanicalForest, type Species } from './foliage';
+import { ClothFlagShaderPlugin } from './flagShader';
 
 const assetUrl = (rel: string) =>
   new URL(`${import.meta.env.BASE_URL}assets/${rel}`, window.location.href).href;
@@ -150,7 +151,8 @@ function floor(x: number, z: number) {
     Math.min(u, v) * hillSample(x0 + hillStep, z0 + hillStep);
   return diagonal + (u > v ? (u - v) * hillSample(x0 + hillStep, z0) : (v - u) * hillSample(x0, z0 + hillStep));
 }
-function hills(scene: Scene, grass: PBRMaterial) {
+function hills(scene: Scene, mats: ReturnType<typeof roadMaterials>) {
+  const grass = mats.grass;
   const g = geometry(),
     w = 93,
     h = 83;
@@ -169,9 +171,11 @@ function hills(scene: Scene, grass: PBRMaterial) {
           const a = j * w + i;
           quad(g, a - w - 1, a - 1, a, a - w);
         }
-  const mat = plain(scene, 'distant pasture', 0.96);
+  const mat = plain(scene, 'distant pasture', 0.94);
   mat.albedoTexture = grass.albedoTexture;
+  mat.bumpTexture = grass.bumpTexture;
   mat.albedoColor = grass.albedoColor;
+  mats.attachTerrainShader(mat);
   publish(scene, 'terrain.rolling Apennine foothills', g, mat).subdivide(4);
 }
 
@@ -316,9 +320,105 @@ async function loadTracksideKit(scene: Scene, mats: ReturnType<typeof roadMateri
   return { placeKit, finishKit };
 }
 
+type ScannedProp =
+  | 'tool_cart'
+  | 'tool_chest'
+  | 'fuel_drum'
+  | 'air_rig'
+  | 'jersey_barrier'
+  | 'parts_cart'
+  | 'toolbox'
+  | 'pit_crate';
+
+async function loadScannedProps(scene: Scene) {
+  const names: ScannedProp[] = [
+    'tool_cart',
+    'tool_chest',
+    'fuel_drum',
+    'air_rig',
+    'jersey_barrier',
+    'parts_cart',
+    'toolbox',
+    'pit_crate',
+  ];
+  const templates = new Map<ScannedProp, { vd: VertexData; material: PBRMaterial | null }[]>();
+  await Promise.all(
+    names.map(async (name) => {
+      const res = await fetch(assetUrl(`props/${name}.glb`));
+      if (!res.ok) throw Error(`Failed to load props/${name}.glb: HTTP ${res.status}`);
+      const container = await LoadAssetContainerAsync(new Uint8Array(await res.arrayBuffer()), scene, {
+        name: `${name}.glb`,
+        pluginExtension: '.glb',
+        pluginOptions: { gltf: { createInstances: false } },
+      });
+      const parts: { vd: VertexData; material: PBRMaterial | null }[] = [];
+      for (const m of container.meshes) {
+        if (!(m instanceof Mesh) || !m.geometry) continue;
+        const vd = bakeGltfVertexData(m);
+        let mat: PBRMaterial | null = null;
+        if (m.material instanceof PBRMaterial) {
+          mat = m.material.clone(`venue.prop.${name}.${parts.length}`);
+          mat.maxSimultaneousLights = 2;
+          for (const t of mat.getActiveTextures()) {
+            if (t instanceof Texture) {
+              t.anisotropicFilteringLevel = 8;
+              t.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
+            }
+          }
+          scene.addMaterial(mat);
+        }
+        parts.push({ vd, material: mat });
+      }
+      templates.set(name, parts);
+      container.dispose();
+    }),
+  );
+
+  const placements = new Map<ScannedProp, number[]>();
+  function placeProp(name: ScannedProp, pos: Vec, yaw = 0, scale: Vec = [1, 1, 1]) {
+    let list = placements.get(name);
+    if (!list) {
+      list = [];
+      placements.set(name, list);
+    }
+    const m = Matrix.Compose(
+      Vector3.FromArray(scale),
+      Quaternion.RotationAxis(Vector3.UpReadOnly, yaw),
+      Vector3.FromArray(pos),
+    );
+    list.push(...m.m);
+  }
+
+  function finishProps() {
+    for (const [name, mats] of placements) {
+      const parts = templates.get(name);
+      if (!parts?.length || !mats.length) continue;
+      const buf = Float32Array.from(mats);
+      parts.forEach((p, idx) => {
+        const mesh = new Mesh(`venue.prop.${name}.${idx}`, scene);
+        p.vd.applyToMesh(mesh);
+        if (p.material) mesh.material = p.material;
+        mesh.cullingStrategy = Mesh.CULLINGSTRATEGY_OPTIMISTIC_INCLUSION;
+        mesh.isPickable = false;
+        mesh.receiveShadows = true;
+        mesh.thinInstanceSetBuffer('matrix', buf, 16, true);
+        const casts = name === 'jersey_barrier' || name === 'tool_cart' || name === 'parts_cart';
+        mesh.metadata = { trackShadowCaster: casts, shadowCaster: casts, nearTreeShadow: casts };
+        mesh.freezeWorldMatrix();
+      });
+    }
+  }
+
+  return { placeProp, finishProps };
+}
+
 export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<typeof roadMaterials>) {
-  hills(scene, mats.grass);
-  const [kit, forest] = await Promise.all([loadTracksideKit(scene, mats), createBotanicalForest(scene)]);
+  hills(scene, mats);
+  const [kit, forest, props] = await Promise.all([
+    loadTracksideKit(scene, mats),
+    createBotanicalForest(scene),
+    loadScannedProps(scene),
+  ]);
 
   const atlas = signage(scene),
     signs = geometry(),
@@ -394,11 +494,110 @@ export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<ty
   // 10-Bay GT3 Pit Garage Complex along the drivable pit lane (+X = 22.8 m)
   // Plus Pit-Wall Team Timing Stands atop the concrete pit wall (d = 9.74 m)
   // Plus illuminated Player Pit Box Portal & Lollipop at Bay 01 (s = 70, d = 17.2 m)
+  // Plus real Poly Haven photogrammetry paddock tools, chests, drums & pneumatic rigs!
   for (let i = 0; i < 16; i++) {
     const z = -42 + i * 16.0;
     kit.placeKit('PitGarageBay', [26.2, 0, z], 0);
     panel('bay' + i, [22.4, 4.22, z - 4.8], 1.55, 0.63, Math.PI / 2);
     if (i % 3 !== 1) panel(i % 2 ? 'off' : 'pits', [24.1, 7.05, z], 9.8, 0.69, Math.PI / 2);
+    // Grounded paddock bay hardware safely tucked beside garage aprons (well clear of pit box d=17.2)
+    if (i % 2 === 0) props.placeProp('tool_cart', [21.3, 0, z + 3.4], -Math.PI * 0.5 + (i % 3 - 1) * 0.14);
+    if (i % 3 === 0) props.placeProp('tool_chest', [21.6, 0, z - 3.6], -Math.PI * 0.5);
+    if (i % 2 === 1) props.placeProp('fuel_drum', [21.5, 0, z + 4.2], i * 0.8);
+    if (i % 4 === 1) props.placeProp('air_rig', [21.2, 0, z - 2.6], -Math.PI * 0.45);
+    if (i % 3 === 1) props.placeProp('parts_cart', [21.4, 0, z + 2.4], -Math.PI * 0.5);
+    if (i % 2 === 0) props.placeProp('pit_crate', [21.5, 0, z - 2.2], i * 0.5);
+    if (i % 4 === 2) props.placeProp('toolbox', [21.1, 0, z + 5.1], -Math.PI * 0.4);
+  }
+  // FIA Glass-Fronted Race Control & Timing Tower at Pit Exit (s=224, d=24.2)
+  {
+    const tcPos = c.at(224, 24.4);
+    const towerConcrete = geometry();
+    const towerGlass = geometry();
+    const addBoxGeom = (geom: RawGeom, cx: number, cy: number, cz: number, wx: number, wy: number, wz: number) => {
+      const hx = wx / 2, hy = wy / 2, hz = wz / 2;
+      const faces: [Vec[], [number, number][]][] = [
+        [[[cx - hx, cy - hy, cz + hz], [cx + hx, cy - hy, cz + hz], [cx + hx, cy + hy, cz + hz], [cx - hx, cy + hy, cz + hz]], [[0, 0], [1, 0], [1, 1], [0, 1]]],
+        [[[cx + hx, cy - hy, cz - hz], [cx - hx, cy - hy, cz - hz], [cx - hx, cy + hy, cz - hz], [cx + hx, cy + hy, cz - hz]], [[0, 0], [1, 0], [1, 1], [0, 1]]],
+        [[[cx - hx, cy - hy, cz - hz], [cx - hx, cy - hy, cz + hz], [cx - hx, cy + hy, cz + hz], [cx - hx, cy + hy, cz - hz]], [[0, 0], [1, 0], [1, 1], [0, 1]]],
+        [[[cx + hx, cy - hy, cz + hz], [cx + hx, cy - hy, cz - hz], [cx + hx, cy + hy, cz - hz], [cx + hx, cy + hy, cz + hz]], [[0, 0], [1, 0], [1, 1], [0, 1]]],
+        [[[cx - hx, cy + hy, cz + hz], [cx + hx, cy + hy, cz + hz], [cx + hx, cy + hy, cz - hz], [cx - hx, cy + hy, cz - hz]], [[0, 0], [1, 0], [1, 1], [0, 1]]],
+      ];
+      for (const [verts, uvs] of faces) {
+        const b = geom.positions.length / 3;
+        for (let i = 0; i < 4; i++) vertex(geom, verts[i], uvs[i]);
+        quad(geom, b, b + 1, b + 2, b + 3);
+      }
+    };
+    // Base podium + core tower + cantilevered control-deck roof + timing pylon
+    addBoxGeom(towerConcrete, tcPos.x, 4.2, tcPos.z, 7.6, 8.4, 9.2);
+    addBoxGeom(towerConcrete, tcPos.x - 1.1, 8.9, tcPos.z, 10.4, 0.9, 11.4);
+    addBoxGeom(towerConcrete, tcPos.x - 1.1, 13.5, tcPos.z, 10.8, 0.75, 11.8);
+    // Tinted panoramic architectural glass around the race-control observation deck
+    addBoxGeom(towerGlass, tcPos.x - 1.0, 11.2, tcPos.z, 9.8, 3.8, 10.8);
+    publish(scene, 'venue.raceControlTower', towerConcrete, mats.concrete, true);
+    const glassMat = plain(scene, 'raceControlGlass', 0.08, 0.78);
+    glassMat.albedoColor = Color3.FromHexString('#182a34').toLinearSpace();
+    glassMat.clearCoat.isEnabled = true;
+    glassMat.clearCoat.intensity = 1.0;
+    glassMat.clearCoat.roughness = 0.04;
+    publish(scene, 'venue.raceControlGlass', towerGlass, glassMat, false);
+    // Illuminated VDO lap-record timing pylon facing oncoming straight traffic!
+    panel('tower', [tcPos.x - 4.05, 8.8, tcPos.z - 5.2], 3.4, 7.2, 0);
+  }
+  // Animated GPU-cloth circuit flags flying over Main Grandstand, Pit Complex & Race Control Tower!
+  const flagTex = new DynamicTexture('venue.circuitFlagsTex', { width: 512, height: 256 }, scene, true, Texture.TRILINEAR_SAMPLINGMODE);
+  {
+    const fc = flagTex.getContext() as CanvasRenderingContext2D;
+    // Left half: Italian Tricolore; Right half: APEX GT3 Racing Banner
+    fc.fillStyle = '#0f8c54'; fc.fillRect(0, 0, 170, 128);
+    fc.fillStyle = '#f5f2e6'; fc.fillRect(170, 0, 172, 128);
+    fc.fillStyle = '#d62828'; fc.fillRect(342, 0, 170, 128);
+    fc.fillStyle = '#121921'; fc.fillRect(0, 128, 512, 128);
+    fc.fillStyle = '#ff5733'; fc.fillRect(0, 128, 180, 128);
+    fc.fillStyle = '#f5f2e6';
+    for (let cy = 0; cy < 4; cy++) for (let cx = 0; cx < 8; cx++) if ((cx + cy) % 2 === 0) fc.fillRect(352 + cx * 20, 128 + cy * 32, 20, 32);
+    flagTex.anisotropicFilteringLevel = 8;
+    flagTex.update(true);
+  }
+  const flagMat = plain(scene, 'circuitFlags', 0.68, 0.04);
+  flagMat.albedoTexture = flagTex;
+  flagMat.backFaceCulling = false;
+  flagMat.twoSidedLighting = true;
+  const flagPlugin = new ClothFlagShaderPlugin(flagMat);
+  const flagGeom = geometry();
+  const poleGeom = geometry();
+  const addFlag = (x: number, y: number, z: number, tricolore: boolean) => {
+    const segX = 8, fw = 2.65, fh = 1.45;
+    const v0 = tricolore ? 0.52 : 0.02, v1 = tricolore ? 0.98 : 0.48;
+    const b = flagGeom.positions.length / 3;
+    for (let i = 0; i <= segX; i++) {
+      const u = i / segX;
+      vertex(flagGeom, [x + u * fw, y, z], [u, v0]);
+      vertex(flagGeom, [x + u * fw, y + fh, z], [u, v1]);
+    }
+    for (let i = 0; i < segX; i++) quad(flagGeom, b + i * 2, b + i * 2 + 2, b + i * 2 + 3, b + i * 2 + 1);
+    // Visible structural steel flagpole mast seated deep into the roofline
+    const pb = poleGeom.positions.length / 3;
+    const r = 0.095;
+    for (const [dx, dz] of [[-r, 0], [r, 0], [0, -r], [0, r]]) {
+      vertex(poleGeom, [x + dx, y - 3.6, z + dz], [0, 0]);
+      vertex(poleGeom, [x + dx, y + fh + 0.18, z + dz], [0, 1]);
+    }
+    quad(poleGeom, pb, pb + 2, pb + 3, pb + 1);
+    quad(poleGeom, pb + 4, pb + 6, pb + 7, pb + 5);
+  };
+  for (let k = 0; k < 8; k++) addFlag(-18.2, 10.65, -30 + k * 25.5, k % 2 === 0);
+  for (let k = 0; k < 6; k++) addFlag(23.2, 8.25, -24 + k * 36, k % 2 === 1);
+  addFlag(22.2, 14.55, 224, true);
+  publish(scene, 'venue.circuitFlags', flagGeom, flagMat, false);
+  publish(scene, 'venue.flagPoles', poleGeom, mats.wall, false);
+  // Real photogrammetry concrete Jersey barriers protecting paddock service entries at pit entry & exit
+  for (let k = 0; k < 5; k++) {
+    const pe = c.at(c.length - PIT_WALL_START_BACK - 18 + k * 2.6, PIT_WALL_D + 13.5);
+    props.placeProp('jersey_barrier', [pe.x, pe.y, pe.z], pe.yaw + Math.PI * 0.5, [1.1, 1.05, 1.1]);
+    const px = c.at(PIT_WALL_END_S + 14 + k * 2.6, PIT_WALL_D + 11.2);
+    props.placeProp('jersey_barrier', [px.x, px.y, px.z], px.yaw + Math.PI * 0.5, [1.1, 1.05, 1.1]);
   }
   // Pit-wall team timing stands spaced along the separating concrete pit wall
   for (let s = 18; s <= 230; s += 26) {
@@ -592,37 +791,147 @@ export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<ty
     kit.placeKit('GrandstandBay', v, p.yaw + (side > 0 ? Math.PI : 0), [0.85, 0.85, 0.85]);
   }
 
-  // Dense Static Multi-Species Botanical Forest (Cypress, Maritime Pine, Holm Oak, Olive)
-  // + Real Poly Haven Photogrammetry Mossy Rocks, Ferns, Shrubs & Grass Clumps!
+  // Curated Multi-Species Mediterranean Botanical Forest (Photorealistic Cypress, Pine, Oak, Olive)
+  // + 7 Real Poly Haven Photogrammetry Biome Models (Limestone Cliffs, Boulders, Scrub, Ferns, Grass)!
   const speciesPool: Species[] = ['Cypress', 'Pine', 'Oak', 'Olive'];
-  for (let i = 0; i < 1050; i++) {
+  const groundY = (x: number, z: number, refY: number) => Math.max(floor(x, z), Math.min(refY, floor(x, z) + 0.6));
+
+  // Helper: dress near-track tree bases with natural undergrowth skirts so zero trunks look bare
+  function dressTreeBase(x: number, y: number, z: number, seedIdx: number) {
+    const skirtCount = 2 + (seedIdx % 2);
+    for (let k = 0; k < skirtCount; k++) {
+      const a = seedIdx * 2.1 + k * 2.3 + rnd() * 0.6;
+      const r = 1.2 + rnd() * 2.1;
+      const bx = x + Math.cos(a) * r;
+      const bz = z + Math.sin(a) * r;
+      const by = floor(bx, bz) - 0.05;
+      const pick = (seedIdx + k) % 4;
+      if (pick === 0) forest.plantBiome('med_bush', [bx, by, bz], [1.1 + rnd() * 0.8, 1.0 + rnd() * 0.7, 1.1 + rnd() * 0.8], rnd() * 6.28, seedIdx + k);
+      else if (pick === 1) forest.plantBiome('fern', [bx, by, bz], [1.2 + rnd() * 0.9, 1.1 + rnd() * 0.8, 1.2 + rnd() * 0.9], rnd() * 6.28, seedIdx + k);
+      else if (pick === 2) forest.plantBiome('grass_clump', [bx, by, bz], [1.3 + rnd() * 1.1, 1.2 + rnd() * 0.9, 1.3 + rnd() * 1.1], rnd() * 6.28, seedIdx + k);
+      else forest.plantBiome('boulder', [bx, by - 0.12, bz], [0.7 + rnd() * 0.9, 0.6 + rnd() * 0.6, 0.7 + rnd() * 0.9], rnd() * 6.28, seedIdx + k);
+    }
+  }
+
+  // 1. Iconic Tuscan Cypress Avenues framing Turn 1 approach, Esses hillside & Villa ridges
+  for (const [sStart, sEnd, step, side, offset] of [
+    [320, 620, 16, -1, 15.5],
+    [340, 600, 20, 1, 18.0],
+    [1220, 1560, 18, -1, 16.0],
+    [2140, 2400, 17, 1, 16.5],
+    [3420, 3820, 19, -1, 17.5],
+  ] as const) {
+    for (let s = sStart; s <= sEnd; s += step) {
+      const p = c.at(s);
+      const d = side * (wallOffset(p, side, c.length) + offset + (rnd() - 0.5) * 3.5);
+      const v = point(p, d);
+      const near = c.nearest(v[0], v[2]),
+        np = c.at(near.s);
+      if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 8.5) continue;
+      const y = groundY(v[0], v[2], v[1]) - 0.12;
+      const h = 0.88 + rnd() * 0.34,
+        w = 0.86 + rnd() * 0.24;
+      forest.plantTree('Cypress', [v[0], y, v[2]], [w, h, w], rnd() * 6.28, Math.floor(s) % 5, false, true);
+      if (rnd() < 0.7) dressTreeBase(v[0], y, v[2], Math.floor(s));
+    }
+  }
+
+  // 2. Sculpted Apennine Limestone Cliff Outcrops along dramatic hillside cuts (Turn 1, Esses, Hairpin)
+  for (const [sStart, sEnd, step, side, extra] of [
+    [600, 880, 26, -1, 11.5],
+    [1420, 1780, 28, 1, 12.5],
+    [2420, 2760, 28, -1, 12.0],
+    [2920, 3240, 32, 1, 14.0],
+  ] as const) {
+    for (let s = sStart; s <= sEnd; s += step) {
+      const p = c.at(s);
+      const d = side * (wallOffset(p, side, c.length) + extra + rnd() * 8);
+      const v = point(p, d);
+      const near = c.nearest(v[0], v[2]),
+        np = c.at(near.s);
+      if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 7.5) continue;
+      const y = floor(v[0], v[2]) - 0.55;
+      const sx = 2.6 + rnd() * 2.2,
+        sy = 2.0 + rnd() * 1.9,
+        sz = 2.4 + rnd() * 2.1;
+      forest.plantBiome('cliff_rock', [v[0], y, v[2]], [sx, sy, sz], p.yaw + (side > 0 ? Math.PI : 0) + (rnd() - 0.5) * 0.6, Math.floor(s), true);
+      // Tuck scrub bushes & mossy rocks along cliff base
+      forest.plantBiome('med_bush', [v[0] - side * 2.2, y + 0.45, v[2] + 1.5], [1.5, 1.3, 1.5], rnd() * 6.28, Math.floor(s));
+    }
+  }
+
+  // 2b. Hero Poly Haven Photogrammetry 3D Coastal Trees (island_tree_02) + Twisted Mediterranean Scrub (searsia_lucida)
+  // + Mossy Woodland Stumps at iconic trackside landmarks!
+  for (const [s, side, distOut, sc] of [
+    [590, -1, 14.5, 1.45],
+    [715, 1, 16.0, 1.35],
+    [1360, -1, 15.0, 1.5],
+    [1685, 1, 14.5, 1.4],
+    [2435, -1, 15.5, 1.45],
+    [2890, 1, 15.0, 1.35],
+    [3560, -1, 16.0, 1.5],
+    [3960, -1, 14.5, 1.4],
+  ] as const) {
+    const p = c.at(s);
+    const v = point(p, side * (wallOffset(p, side, c.length) + distOut));
+    const near = c.nearest(v[0], v[2]),
+      np = c.at(near.s);
+    if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 8.5) continue;
+    const y = floor(v[0], v[2]) - 0.25;
+    forest.plantBiome('coastal_tree', [v[0], y, v[2]], [sc, sc, sc], rnd() * 6.28, 0, true);
+    forest.plantBiome('scrub_tree', [v[0] + 3.2, floor(v[0] + 3.2, v[2] - 2.1) - 0.1, v[2] - 2.1], [1.4, 1.35, 1.4], rnd() * 6.28, 0, false);
+    forest.plantBiome('stump', [v[0] - 2.6, floor(v[0] - 2.6, v[2] + 1.8) - 0.08, v[2] + 1.8], [1.1, 1.1, 1.1], rnd() * 6.28, 0, false);
+  }
+  for (let i = 0; i < 65; i++) {
     const s = rnd() * c.length,
       p = c.at(s),
       side = rnd() < 0.5 ? -1 : 1,
-      d = side * (wallOffset(p, side, c.length) + 9.5 + rnd() * 115),
-      v = point(p, d);
-    if (v[0] > -38 && v[0] < 44 && v[2] > -105 && v[2] < 275) continue;
+      v = point(p, side * (wallOffset(p, side, c.length) + 7.5 + rnd() * 28));
+    if (v[0] > -44 && v[0] < 54 && v[2] > -100 && v[2] < 275) continue;
     const near = c.nearest(v[0], v[2]),
       np = c.at(near.s);
-    if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 8.0) continue;
+    if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 5.5) continue;
+    const y = floor(v[0], v[2]) - 0.12;
+    const sc = 1.1 + rnd() * 0.9;
+    forest.plantBiome('scrub_tree', [v[0], y, v[2]], [sc, sc * 0.95, sc], rnd() * 6.28, i, false);
+    if (i % 3 === 0) forest.plantBiome('stump', [v[0] + 1.8, y, v[2] - 1.4], [0.95 + rnd() * 0.5, 0.95, 0.95 + rnd() * 0.5], rnd() * 6.28, i, false);
+  }
+
+  // 3. Natural Multi-Species Mediterranean Woodland Groves around the circuit
+  for (let i = 0; i < 980; i++) {
+    const s = rnd() * c.length,
+      p = c.at(s),
+      side = rnd() < 0.5 ? -1 : 1,
+      distOut = 10.5 + Math.pow(rnd(), 1.15) * 112,
+      d = side * (wallOffset(p, side, c.length) + distOut),
+      v = point(p, d);
+    if (v[0] > -40 && v[0] < 48 && v[2] > -108 && v[2] < 278) continue;
+    const near = c.nearest(v[0], v[2]),
+      np = c.at(near.s);
+    if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 8.5) continue;
     const rChoice = rnd();
-    const sp: Species = rChoice < 0.34 ? 'Cypress' : rChoice < 0.66 ? 'Pine' : rChoice < 0.85 ? 'Oak' : 'Olive';
-    const h = 0.82 + rnd() * 0.62,
-      w = 0.84 + rnd() * 0.52;
-    forest.plantTree(sp, [v[0], floor(v[0], v[2]) - 0.12, v[2]], [w, h, w * (0.88 + rnd() * 0.24)], rnd() * 6.28, i % 4, false);
+    const sp: Species = rChoice < 0.30 ? 'Cypress' : rChoice < 0.62 ? 'Pine' : rChoice < 0.84 ? 'Oak' : 'Olive';
+    const h = 0.80 + rnd() * 0.58,
+      w = 0.82 + rnd() * 0.48;
+    const y = floor(v[0], v[2]) - 0.18;
+    const casts = distOut < 28;
+    forest.plantTree(sp, [v[0], y, v[2]], [w, h, w * (0.88 + rnd() * 0.24)], rnd() * 6.28, i % 5, false, casts);
+    if (casts && i % 2 === 0) dressTreeBase(v[0], y, v[2], i);
   }
   // Lush hillside groves framing the main straight & Turn 1 Apennine skyline!
-  for (let i = 0; i < 240; i++) {
+  for (let i = 0; i < 220; i++) {
     const side = i % 2 === 0 ? -1 : 1;
-    const x = side < 0 ? -42 - rnd() * 145 : 46 + rnd() * 145;
+    const x = side < 0 ? -44 - rnd() * 145 : 48 + rnd() * 145;
     const z = -90 + rnd() * 820;
     const near = c.nearest(x, z),
       np = c.at(near.s);
-    if (Math.hypot(np.x - x, np.z - z) < wallOffset(np, Math.sign(near.d), c.length) + 9) continue;
+    if (Math.hypot(np.x - x, np.z - z) < wallOffset(np, Math.sign(near.d), c.length) + 9.5) continue;
     const sp: Species = i % 3 === 0 ? 'Cypress' : i % 3 === 1 ? 'Pine' : 'Oak';
-    const h = 0.9 + rnd() * 0.65,
-      w = 0.88 + rnd() * 0.52;
-    forest.plantTree(sp, [x, floor(x, z) - 0.15, z], [w, h, w], rnd() * 6.28, i % 4, false);
+    const h = 0.88 + rnd() * 0.62,
+      w = 0.86 + rnd() * 0.48;
+    const y = floor(x, z) - 0.18;
+    const casts = Math.abs(x) < 76;
+    forest.plantTree(sp, [x, y, z], [w, h, w], rnd() * 6.28, i % 5, false, casts);
   }
   // Distant ridge forest (LOD1 silhouettes, zero shadow cost)
   for (let i = 0; i < 360; i++) {
@@ -630,30 +939,36 @@ export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<ty
       z = i % 2 ? -630 - rnd() * 210 : 820 + rnd() * 230,
       h = 0.85 + rnd() * 0.72,
       w = 0.78 + rnd() * 0.58;
-    forest.plantTree(speciesPool[i % 4], [x, floor(x, z) - 0.15, z], [w, h, w], rnd() * 6.28, i % 4, true);
+    forest.plantTree(speciesPool[i % 4], [x, floor(x, z) - 0.18, z], [w, h, w], rnd() * 6.28, i % 5, true, false);
   }
 
-  // Layer genuine Poly Haven photogrammetry rocks, shrubs, ferns & grass clumps along corners & banks!
-  for (let i = 0; i < 420; i++) {
+  // 4. Layered Poly Haven Photogrammetry Undergrowth, Boulders, Ferns & Scrub along track banks!
+  for (let i = 0; i < 480; i++) {
     const s = rnd() * c.length,
       p = c.at(s),
       side = rnd() < 0.5 ? -1 : 1,
       wallD = wallOffset(p, side, c.length),
-      d = side * (wallD + 2.2 + rnd() * 26),
+      d = side * (wallD + 2.4 + rnd() * 26),
       v = point(p, d);
     if (v[0] > -44 && v[0] < 54 && v[2] > -100 && v[2] < 275) continue;
     const near = c.nearest(v[0], v[2]),
       np = c.at(near.s);
-    if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 1.8) continue;
-    const y = Math.min(v[1], floor(v[0], v[2])) + 0.05;
+    if (Math.hypot(np.x - v[0], np.z - v[2]) < wallOffset(np, Math.sign(near.d), c.length) + 2.0) continue;
+    const y = Math.min(v[1], floor(v[0], v[2])) + 0.02;
     const roll = rnd();
-    if (roll < 0.28) {
-      const sc = 0.85 + rnd() * 1.45;
-      forest.plantBiome('rock_moss', [v[0], y - 0.15, v[2]], [sc, sc * (0.75 + rnd() * 0.4), sc], rnd() * 6.28, i);
+    if (roll < 0.18) {
+      const sc = 0.85 + rnd() * 1.35;
+      forest.plantBiome('rock_moss', [v[0], y - 0.14, v[2]], [sc, sc * (0.75 + rnd() * 0.4), sc], rnd() * 6.28, i);
+    } else if (roll < 0.34) {
+      const sc = 0.75 + rnd() * 1.15;
+      forest.plantBiome('boulder', [v[0], y - 0.14, v[2]], [sc, sc * 0.82, sc], rnd() * 6.28, i);
     } else if (roll < 0.54) {
-      const sc = 1.2 + rnd() * 1.2;
+      const sc = 1.15 + rnd() * 1.25;
+      forest.plantBiome('med_bush', [v[0], y, v[2]], [sc, sc * 0.92, sc], rnd() * 6.28, i);
+    } else if (roll < 0.72) {
+      const sc = 1.2 + rnd() * 1.1;
       forest.plantBiome('shrub', [v[0], y, v[2]], [sc, sc, sc], rnd() * 6.28, i);
-    } else if (roll < 0.76) {
+    } else if (roll < 0.86) {
       const sc = 1.1 + rnd() * 1.1;
       forest.plantBiome('fern', [v[0], y, v[2]], [sc, sc, sc], rnd() * 6.28, i);
     } else {
@@ -705,6 +1020,7 @@ export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<ty
   publish(scene, 'venue.terrace crowds', crowdGeom, peopleMat);
   publish(scene, 'venue.grid markings', gridPaint, mats.paint);
   kit.finishKit();
+  props.finishProps();
   forest.finish();
 
   let last = -1;
@@ -715,11 +1031,18 @@ export async function buildScenery(scene: Scene, c: Circuit, mats: ReturnType<ty
       for (let j = 0; j < 5; j++) lights[j].material = j < n ? liveLight : darkLight;
       last = n;
     },
-    setFlagWeather(w: Weather) {
+    setWeather(w: Weather) {
       // Digital FIA marshal flag panels switch to wet/slippery amber in Heavy Rain
       if (w === 'rain') flagLedMat.emissiveColor.set(1.65, 0.92, 0.06);
       else if (w === 'damp') flagLedMat.emissiveColor.set(0.75, 1.25, 0.14);
       else flagLedMat.emissiveColor.set(0.08, 1.45, 0.28);
+      flagPlugin.amplitude = w === 'rain' ? 0.36 : w === 'damp' ? 0.26 : 0.18;
+      flagPlugin.speed = w === 'rain' ? 9.2 : w === 'damp' ? 6.8 : 4.8;
+      forest.setWeather(w);
+    },
+    update(dt: number) {
+      flagPlugin.time += Math.max(0, Math.min(0.1, dt));
+      forest.update(dt);
     },
   };
 }

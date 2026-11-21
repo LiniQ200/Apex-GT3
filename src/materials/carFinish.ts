@@ -6,6 +6,7 @@ import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTextur
 import type { Scene } from '@babylonjs/core/scene';
 import { teams } from '../types';
 import type { Studio } from '../vehicles/studio';
+import { CarFinishShaderPlugin } from './carShader';
 
 type Ctx = CanvasRenderingContext2D;
 // UV addresses in the two tiny material strips used on consolidated race geometry.
@@ -211,7 +212,26 @@ function lightBox(scene: Scene, number: string, team: string) {
 }
 
 function sharedMaterials(scene: Scene) {
-  const trim = pbr(scene, 'composite and upholstery', '#34383c', 0.1, 0.55);
+  const trim = pbr(scene, 'composite and upholstery', '#2a2e33', 0.06, 0.72);
+  // Subtle procedural Alcantara suede micro-grain for cockpit wheel & dashboard upholstery
+  const alcantara = canvasMap(scene, 'alcantara.grain', 128, 128, (c) => {
+    const img = c.createImageData(128, 128),
+      d = img.data;
+    let seed = 88421;
+    for (let i = 0; i < d.length; i += 4) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const v = 104 + ((seed >>> 24) % 48);
+      d[i] = v;
+      d[i + 1] = v;
+      d[i + 2] = 255;
+      d[i + 3] = 255;
+    }
+    c.putImageData(img, 0, 0);
+  });
+  alcantara.uScale = 14;
+  alcantara.vScale = 14;
+  trim.bumpTexture = alcantara;
+  trim.bumpTexture.level = 0.22;
   const metal = pbr(scene, 'polished titanium', '#b5b7ba', 0.88, 0.24);
   const glass = pbr(scene, 'smoke laminated glass', '#8caeb9', 0.2, 0.12);
   glass.alpha = 0.43;
@@ -322,26 +342,39 @@ function sharedMaterials(scene: Scene) {
 interface Bank {
   common: ReturnType<typeof sharedMaterials>;
   paint: Map<number, PBRMaterial>;
+  paintPlugins: Map<number, CarFinishShaderPlugin>;
   panels: Map<string, PBRMaterial>;
   shadows: Map<string, StandardMaterial>;
 }
 const banks = new WeakMap<Scene, Bank>();
+export function setCarPaintWetness(scene: Scene, wetness: number) {
+  const bank = banks.get(scene);
+  if (!bank) return;
+  for (const p of bank.paintPlugins.values()) p.wetness = wetness;
+}
 export function carFinish(scene: Scene, idx: number, number: string) {
   let bank = banks.get(scene);
   if (!bank) {
-    bank = { common: sharedMaterials(scene), paint: new Map(), panels: new Map(), shadows: new Map() };
+    bank = {
+      common: sharedMaterials(scene),
+      paint: new Map(),
+      paintPlugins: new Map(),
+      panels: new Map(),
+      shadows: new Map(),
+    };
     banks.set(scene, bank);
   }
   const k = ((idx % 5) + 5) % 5,
     team = teams[k];
   let paint = bank.paint.get(k);
   if (!paint) {
-    paint = pbr(scene, team[1], '#ffffff', 0.48, 0.26);
+    paint = pbr(scene, team[1], '#ffffff', 0.50, 0.24);
     paint.albedoTexture = paintAtlas(scene, k);
     paint.clearCoat.isEnabled = true;
     paint.clearCoat.intensity = 1;
-    paint.clearCoat.roughness = 0.03;
-    paint.clearCoat.indexOfRefraction = 1.5;
+    paint.clearCoat.roughness = 0.025;
+    paint.clearCoat.indexOfRefraction = 1.52;
+    bank.paintPlugins.set(k, new CarFinishShaderPlugin(paint));
     bank.paint.set(k, paint);
   }
   const key = `${k}:${number}`;
@@ -372,8 +405,8 @@ export function contactShadow(scene: Scene, s: Studio, footprint: { width: numbe
       c.fillRect(-1, -1, 2, 2);
       c.restore();
     };
-    ellipse(0, 0, s.fit.width * 0.58, s.fit.length * 0.54, 0.62);
-    s.hubs.forEach((p, i) => ellipse(p.x, p.z, s.tireWidths[i] * 0.5 + 0.17, s.radii[i] + 0.08, 0.83));
+    ellipse(0, 0, s.fit.width * 0.56, s.fit.length * 0.52, 0.74);
+    s.hubs.forEach((p, i) => ellipse(p.x, p.z, s.tireWidths[i] * 0.5 + 0.18, s.radii[i] + 0.10, 0.90));
   });
   map.hasAlpha = true;
   m = new StandardMaterial('contact attenuation ' + s.source, scene);

@@ -15,14 +15,17 @@ Both vehicles are adapted in-game: reduced geometry, scale and wheel rigs,
 race liveries, aero, glass, cockpit details and lights. This fictional venue
 and its cars are not FIA homologated or endorsed by the named manufacturers.
 
-HDRIs, 3D photogrammetry biome models, and PBR textures: Poly Haven (CC0), https://polyhaven.com/license
-Includes rock_moss_set_01, fern_02, shrub_sorrel_01, grass_medium_01, four Pure Sky HDRIs,
-and scanned asphalt, concrete, kerb, terrain, gravel, bark, and corrugated steel PBR sets.
+HDRIs, 3D photogrammetry biome/paddock models, and PBR textures: Poly Haven (CC0), https://polyhaven.com/license
+Includes island_tree_02, searsia_lucida, tree_stump_01, rock_moss_set_01, fern_02, shrub_sorrel_01,
+grass_medium_01, rock_face_02, rock_09, wild_rooibos_bush, tool_cart, metal_tool_chest, Barrel_01,
+tire_pump, concrete_road_barrier_02, industrial_storage_cart, metal_toolbox, plastic_crate_02,
+four Pure Sky HDRIs, and scanned asphalt_track, concrete, kerb, terrain, gravel, bark, and corrugated steel PBR sets.
 The asset manifest lists the exact downloaded sources: /assets/manifest.json
 
 Valle d'Oro vegetation and FIA trackside kit: original Mediterranean tree species
-(Cypress, Maritime Pine, Holm Oak, Olive), botanical atlas, and studio-beveled FIA Grade-1
-circuit architecture authored via headless Blender 4.3 (scripts/blender_generate_circuit_kit.py)
+(Cypress, Maritime Stone Pine, Holm Oak, Olive), 2048px botanical atlas & normal map
+(scripts/build-botanical-kit.mjs), and studio-beveled FIA Grade-1 circuit architecture
+authored via headless Blender 4.3 (scripts/blender_generate_circuit_kit.py)
 and dedicated to the public domain under CC0 1.0: https://creativecommons.org/publicdomain/zero/1.0/
 
 Barlow Condensed by Jeremy Tribby — SIL Open Font License 1.1.

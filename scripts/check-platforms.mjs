@@ -60,7 +60,7 @@ try {
   });
   assert.ok(range > 40, `the actual canvas must recover from a transient blank frame: RGB range ${range}`);
   await display.evaluate(() => { window.blackAll = true; });
-  await display.locator('[data-quality=ultra]').click();
+  await display.locator('[data-livery="1"]').click();
   await display.getByText(/returned a blank picture/).waitFor();
   assert.equal(await display.evaluate(() => typeof window.__GT3_DEBUG__), 'undefined');
   assert.ok(await display.getByRole('link', { name: 'Retry launch' }).isVisible());
@@ -90,7 +90,7 @@ try {
   await ready('garage');
   assert.equal(await page.evaluate(() => location.pathname), url.pathname);
   assert.equal(await page.evaluate(() => window.__GT3_DEBUG__.getState().settings.graphics), 'high');
-  assert.equal(await page.locator('[data-quality=high]').getAttribute('aria-pressed'), 'true');
+  assert.ok(await page.locator('.ax-preset-badge').isVisible());
   await page.goto(new URL('?view=light', url).href);
   await ready('garage');
   const state = () => page.evaluate(() => window.__GT3_DEBUG__.getState());

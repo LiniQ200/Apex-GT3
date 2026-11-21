@@ -2,6 +2,7 @@ import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import type { Scene } from '@babylonjs/core/scene';
 import { createCameras } from '../cameras';
 import { buildVehicle } from '../vehicles/gt3Builder';
+import { setCarPaintWetness } from '../materials/carFinish';
 import { studio } from '../vehicles/studio';
 import type { Circuit, GridWheelLayouts, Settings, TrackScene, VehicleRig, WheelLayout } from '../types';
 import { bootstrap, lighting, whenSceneReady } from './render';
@@ -92,6 +93,9 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
         if (m.name === 'HDR sky' || m.name === 'rear vision glass' || m.name === 'instrument anti-glare LCD' ||
             m.name.startsWith('weather.') || m.name.includes('.LED tail') || m.name.includes('.rain') ||
             m.name.includes('.disc') || m.name === 'venue.asphalt' || m.name === 'venue.terrain' ||
+            m.name === 'venue.distant pasture' || m.name === 'venue.Mediterranean canopy' ||
+            m.name === 'venue.Mediterranean bark' || m.name === 'venue.circuitFlags' ||
+            m.name.startsWith('venue.biome.') ||
             m.name === 'venue.gravel' || m.name === 'venue.concrete' || m.name === 'venue.kerb' ||
             m.name === 'venue.track enamel' || m.name === 'venue.FIA digital flag panel' ||
             m.name === 'venue.start signal unlit' || m.name === 'venue.FIA signal red') continue;
@@ -144,6 +148,7 @@ export async function createStudioView(element: HTMLCanvasElement, circuit: Circ
       },
       async setWeather(w) {
         freezeStaticMaterials(false);
+        setCarPaintWetness(scene, w === 'rain' ? 0.92 : w === 'damp' ? 0.45 : 0);
         track?.setWeather(w);
         await light.setWeather(w);
         if (!scene.isDisposed && rigs.length) {

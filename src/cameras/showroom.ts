@@ -10,6 +10,8 @@ import { CreateLathe } from '@babylonjs/core/Meshes/Builders/latheBuilder';
 import { CreateCylinder } from '@babylonjs/core/Meshes/Builders/cylinderBuilder';
 import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
+import { Texture } from '@babylonjs/core/Materials/Textures/texture';
+import { LoadAssetContainerAsync } from '@babylonjs/core/Loading/sceneLoader';
 import { PointLight } from '@babylonjs/core/Lights/pointLight';
 
 type Painter = (ctx: CanvasRenderingContext2D, w: number, h: number) => void;
@@ -217,7 +219,11 @@ export function buildShowroom(scene: Scene): TransformNode {
     p.rotation.y = Math.PI;
     return p;
   }
-  const slab = texture('resin inspection floor', 1024, 1024, floorPaint, 0.54, 0.1);
+  const slab = texture('resin inspection floor', 1024, 1024, floorPaint, 0.44, 0.14);
+  // Polished factory paddock epoxy clearcoat reflection on the Bay 01 floor
+  slab.clearCoat.isEnabled = true;
+  slab.clearCoat.intensity = 0.48;
+  slab.clearCoat.roughness = 0.14;
   part(CreateGround('garage.floor', { width: 24, height: 24 }, scene), slab, 0, -0.006, 0);
   const facade = texture('anodised wall mural', 2048, 512, wallPaint, 0.66, 0.23);
   face('rear wall cladding', 0, 3.2, -6.8, 25.6, 6.4, facade);
@@ -334,15 +340,66 @@ export function buildShowroom(scene: Scene): TransformNode {
     mesh.isPickable = false;
     mesh.receiveShadows = m === slab;
   }
+  // Hydrate real Poly Haven CC0 photogrammetry workshop hardware into Bay 01 cleanly
+  // Framed cleanly along the bay perimeter so the GT3 rear wing & cabin silhouette stay unobstructed
+  const propSpecs: readonly [string, [number, number, number], number, number][] = [
+    ['tool_cart', [4.2, 0, -5.55], -0.25, 0.95],
+    ['tool_chest', [-4.65, 0, -5.35], 0.18, 1.0],
+    ['parts_cart', [5.95, 0, -5.35], -0.15, 0.92],
+    ['toolbox', [-2.25, 0, -5.25], 0.35, 1.0],
+    ['fuel_drum', [8.45, 0, -3.25], 0.9, 0.95],
+    ['fuel_drum', [8.65, 0, -2.35], 2.1, 0.95],
+    ['air_rig', [-3.35, 0, -4.85], 0.52, 1.05],
+  ];
+  const baseAsset = (rel: string) =>
+    new URL(`${import.meta.env.BASE_URL}assets/${rel}`, window.location.href).href;
+  void Promise.all(
+    propSpecs.map(async ([name, pos, yaw, sc], idx) => {
+      try {
+        const res = await fetch(baseAsset(`props/${name}.glb`));
+        if (!res.ok || root.isDisposed() || scene.isDisposed) return;
+        const container = await LoadAssetContainerAsync(new Uint8Array(await res.arrayBuffer()), scene, {
+          name: `garage.${name}.${idx}.glb`,
+          pluginExtension: '.glb',
+        });
+        if (root.isDisposed() || scene.isDisposed) {
+          container.dispose();
+          return;
+        }
+        const holder = new TransformNode(`garage.prop.${name}.${idx}`, scene);
+        holder.parent = root;
+        holder.position.set(pos[0], pos[1], pos[2]);
+        holder.rotation.y = yaw;
+        holder.scaling.setAll(sc);
+        container.addAllToScene();
+        for (const n of container.rootNodes) n.parent = holder;
+        for (const m of container.meshes) {
+          m.name = `garage.prop.${name}.${idx}.${m.name}`;
+          m.isPickable = false;
+          m.receiveShadows = true;
+          m.metadata = { noShadowCaster: true };
+          if (m.material instanceof PBRMaterial) {
+            m.material.maxSimultaneousLights = 3;
+            for (const t of m.material.getActiveTextures()) {
+              if (t instanceof Texture) t.anisotropicFilteringLevel = 8;
+            }
+          }
+        }
+      } catch {
+        // Non-blocking decorative workshop props
+      }
+    }),
+  );
+
   // Only these very short-range practicals belong to the set; the scene's sky,
   // IBL, sun, exposure, and post chain remain the engine's responsibility.
   for (const [n, x, y, z, power, color] of [
-    ['key', -3.4, 4.25, 2.6, 36, '#ffe9d3'],
-    ['rim', 2.65, 3.4, -2.6, 29, '#dde9ff'],
+    ['key', -3.4, 4.25, 2.6, 42, '#ffe9d3'],
+    ['rim', 2.65, 3.4, -2.6, 34, '#dde9ff'],
   ] as const) {
     const light = new PointLight(`garage.softbox.${n}`, new Vector3(x, y, z), scene);
     light.parent = root;
-    light.range = 13;
+    light.range = 14;
     light.radius = 0.85;
     light.diffuse = Color3.FromHexString(color);
     light.intensity = power;

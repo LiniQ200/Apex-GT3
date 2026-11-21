@@ -54,8 +54,8 @@ try {
   // must release its readiness token before Drive can start.
   await page.route('**/skies/overcast_race.env', () => {});
   await Promise.all([page.waitForRequest('**/skies/overcast_race.env'),
-    game.locator('[data-setting="weather"]').selectOption('damp')]);
-  await game.locator('[data-setting="weather"]').selectOption('golden');
+    game.locator('[data-section="garage"] [data-setting="weather"]').selectOption('damp')]);
+  await game.locator('[data-section="garage"] [data-setting="weather"]').selectOption('golden');
   await ready('garage');
   await page.unroute('**/skies/overcast_race.env');
   await game.evaluate(() => window.__GT3_DEBUG__.freeze(true));

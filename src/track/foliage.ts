@@ -7,10 +7,22 @@ import { PBRMaterial } from '@babylonjs/core/Materials/PBR/pbrMaterial';
 import { Texture } from '@babylonjs/core/Materials/Textures/texture';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Matrix, Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
+import type { Weather } from '../types';
 import type { Vec } from './road';
+import { FoliageAtmosphericPlugin } from './foliageShader';
 
 export type Species = 'Cypress' | 'Pine' | 'Oak' | 'Olive';
-export type BiomeProp = 'rock_moss' | 'fern' | 'shrub' | 'grass_clump';
+export type BiomeProp =
+  | 'rock_moss'
+  | 'fern'
+  | 'shrub'
+  | 'grass_clump'
+  | 'cliff_rock'
+  | 'boulder'
+  | 'med_bush'
+  | 'coastal_tree'
+  | 'scrub_tree'
+  | 'stump';
 
 interface LoadedTemplate {
   vd: VertexData;
@@ -66,15 +78,55 @@ export function bakeGltfVertexData(m: Mesh): VertexData {
 }
 
 /**
- * Load the Blender 4.3 Mediterranean 4-species botanical kit (LOD0 + LOD1)
- * and the 4 genuine Poly Haven photogrammetry biome GLBs (mossy rocks, ferns,
- * shrubs, grass clumps). Every instance is static (zero wind-sway overhead),
- * rendered with crisp ALPHATEST, 16x anisotropy, scanned bark normals, and
- * spatial-hashed ThinInstance buffers with frozen world matrices.
+ * Load the upgraded 2-material Mediterranean 4-species botanical kit (separate scanned PBR
+ * bark + 2048x2048 photorealistic botanical canopy with normal map, GPU wind sway & backlit SSS)
+ * plus 7 genuine Poly Haven CC0 photogrammetry biome GLBs (limestone cliffs, boulders,
+ * mossy rocks, Mediterranean scrub bushes, ferns, shrubs, and grass clumps).
  */
 export async function createBotanicalForest(scene: Scene) {
-  // 1. Shared Mediterranean 4-species foliage + bark PBR material
-  // invertY: false matches glTF TEXCOORD_0 origin (V=0 at top of atlas)
+  const plugins: FoliageAtmosphericPlugin[] = [];
+
+  // 1. Real Poly Haven scanned PBR bark material for all tree trunks & branches
+  const barkAlbedo = new Texture(assetUrl('bark/albedo.jpg'), scene, {
+    noMipmap: false,
+    samplingMode: Texture.TRILINEAR_SAMPLINGMODE,
+    gammaSpace: true,
+    useSRGBBuffer: true,
+  });
+  barkAlbedo.anisotropicFilteringLevel = 16;
+  const barkNormal = new Texture(assetUrl('bark/normal.jpg'), scene, {
+    noMipmap: false,
+    samplingMode: Texture.TRILINEAR_SAMPLINGMODE,
+    gammaSpace: false,
+    useSRGBBuffer: false,
+  });
+  barkNormal.anisotropicFilteringLevel = 16;
+  const barkOrm = new Texture(assetUrl('bark/orm.jpg'), scene, {
+    noMipmap: false,
+    samplingMode: Texture.TRILINEAR_SAMPLINGMODE,
+    gammaSpace: false,
+    useSRGBBuffer: false,
+  });
+  barkOrm.anisotropicFilteringLevel = 8;
+
+  const barkMat = new PBRMaterial('venue.Mediterranean bark', scene);
+  barkMat.albedoTexture = barkAlbedo;
+  barkMat.albedoColor = new Color3(0.86, 0.80, 0.72);
+  barkMat.bumpTexture = barkNormal;
+  barkMat.bumpTexture.level = 0.85;
+  barkMat.metallicTexture = barkOrm;
+  barkMat.useAmbientOcclusionFromMetallicTextureRed = true;
+  barkMat.useRoughnessFromMetallicTextureAlpha = false;
+  barkMat.useRoughnessFromMetallicTextureGreen = true;
+  barkMat.useMetallnessFromMetallicTextureBlue = true;
+  barkMat.ambientTextureStrength = 0.72;
+  barkMat.roughness = 1.0;
+  barkMat.maxSimultaneousLights = 2;
+  // Subtle trunk sway synced to canopy height
+  const barkWind = new FoliageAtmosphericPlugin(barkMat, { wind: true, invHeight: 0.065, sssIntensity: 0.0 });
+  plugins.push(barkWind);
+
+  // 2. Photorealistic 2048x2048 Mediterranean botanical canopy material with normal map + GPU wind + backlit SSS
   const atlas = new Texture(assetUrl('foliage/mediterranean-atlas.webp'), scene, {
     noMipmap: false,
     invertY: false,
@@ -86,30 +138,32 @@ export async function createBotanicalForest(scene: Scene) {
   atlas.wrapU = atlas.wrapV = Texture.CLAMP_ADDRESSMODE;
   atlas.anisotropicFilteringLevel = 16;
 
-  const barkNormal = new Texture(assetUrl('bark/normal.jpg'), scene, {
+  const canopyNormal = new Texture(assetUrl('foliage/mediterranean-normal.webp'), scene, {
     noMipmap: false,
+    invertY: false,
     samplingMode: Texture.TRILINEAR_SAMPLINGMODE,
     gammaSpace: false,
     useSRGBBuffer: false,
   });
-  barkNormal.anisotropicFilteringLevel = 16;
+  canopyNormal.wrapU = canopyNormal.wrapV = Texture.CLAMP_ADDRESSMODE;
+  canopyNormal.anisotropicFilteringLevel = 16;
 
-  const treeMat = new PBRMaterial('venue.Mediterranean forest', scene);
-  treeMat.albedoTexture = atlas;
-  treeMat.bumpTexture = barkNormal;
-  treeMat.bumpTexture.level = 0.28;
-  treeMat.metallic = 0;
-  treeMat.metallicF0Factor = 0.25;
-  treeMat.roughness = 0.92;
-  treeMat.maxSimultaneousLights = 2;
-  treeMat.transparencyMode = PBRMaterial.PBRMATERIAL_ALPHATEST;
-  treeMat.alphaCutOff = 0.42;
-  treeMat.backFaceCulling = false;
-  treeMat.twoSidedLighting = false;
-  // Warm subtle leaf bounce without expensive multi-pass subsurface scattering
-  treeMat.emissiveColor = new Color3(0.035, 0.052, 0.02);
+  const canopyMat = new PBRMaterial('venue.Mediterranean canopy', scene);
+  canopyMat.albedoTexture = atlas;
+  canopyMat.bumpTexture = canopyNormal;
+  canopyMat.bumpTexture.level = 0.62;
+  canopyMat.metallic = 0;
+  canopyMat.metallicF0Factor = 0.22;
+  canopyMat.roughness = 0.86;
+  canopyMat.maxSimultaneousLights = 2;
+  canopyMat.transparencyMode = PBRMaterial.PBRMATERIAL_ALPHATEST;
+  canopyMat.alphaCutOff = 0.42;
+  canopyMat.backFaceCulling = false;
+  canopyMat.twoSidedLighting = true;
+  const canopyPlugin = new FoliageAtmosphericPlugin(canopyMat, { wind: true, invHeight: 0.072, sssIntensity: 0.72 });
+  plugins.push(canopyPlugin);
 
-  // Load Blender 4.3 botanical kit (Cypress, Pine, Oak, Olive LOD0/LOD1)
+  // Load upgraded branching botanical kit (Bark + Canopy LOD0/LOD1 for Cypress, Pine, Oak, Olive)
   const treeGeoms = new Map<string, VertexData>();
   const botRes = await fetch(assetUrl('kit/botanical.glb'));
   if (!botRes.ok) throw Error(`Failed to load kit/botanical.glb: HTTP ${botRes.status}`);
@@ -126,9 +180,21 @@ export async function createBotanicalForest(scene: Scene) {
   }
   botContainer.dispose();
 
-  // Load 4 genuine Poly Haven photogrammetry biome GLBs (keep their scanned PBR materials!)
+  // Load all 10 genuine Poly Haven CC0 photogrammetry biome GLBs (keep their scanned PBR materials!)
   const biomeTemplates = new Map<BiomeProp, LoadedTemplate[]>();
-  const biomeNames: BiomeProp[] = ['rock_moss', 'fern', 'shrub', 'grass_clump'];
+  const biomeNames: BiomeProp[] = [
+    'rock_moss',
+    'fern',
+    'shrub',
+    'grass_clump',
+    'cliff_rock',
+    'boulder',
+    'med_bush',
+    'coastal_tree',
+    'scrub_tree',
+    'stump',
+  ];
+  const staticSolidProps = new Set<BiomeProp>(['rock_moss', 'cliff_rock', 'boulder', 'stump']);
   await Promise.all(
     biomeNames.map(async (prop) => {
       const res = await fetch(assetUrl(`biome/${prop}.glb`));
@@ -146,19 +212,21 @@ export async function createBotanicalForest(scene: Scene) {
         if (m.material instanceof PBRMaterial) {
           mat = m.material.clone(`venue.biome.${prop}.${list.length}`);
           mat.maxSimultaneousLights = 2;
-          // Keep crisp trilinear 8x AF on background biome props to save mobile/integrated GPU bandwidth
           for (const t of mat.getActiveTextures()) {
             if (t instanceof Texture) {
               t.anisotropicFilteringLevel = 8;
               t.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE);
             }
           }
-          if (prop !== 'rock_moss') {
+          if (!staticSolidProps.has(prop)) {
             mat.transparencyMode = PBRMaterial.PBRMATERIAL_ALPHATEST;
             mat.alphaCutOff = 0.42;
             mat.backFaceCulling = false;
-            mat.twoSidedLighting = false;
-            mat.roughness = Math.max(0.82, mat.roughness ?? 0.9);
+            mat.twoSidedLighting = true;
+            mat.roughness = Math.max(0.80, mat.roughness ?? 0.88);
+            const invH = prop === 'coastal_tree' ? 0.14 : prop === 'scrub_tree' ? 0.32 : 0.72;
+            const p = new FoliageAtmosphericPlugin(mat, { wind: true, invHeight: invH, sssIntensity: 0.48 });
+            plugins.push(p);
           } else {
             mat.roughness = Math.max(0.84, mat.roughness ?? 0.9);
           }
@@ -166,26 +234,34 @@ export async function createBotanicalForest(scene: Scene) {
         }
         list.push({ vd, material: mat });
       }
-      biomeTemplates.set(prop, list.slice(0, 2));
+      biomeTemplates.set(prop, prop === 'coastal_tree' || prop === 'scrub_tree' ? list : list.slice(0, 3));
       container.dispose();
     }),
   );
 
   // Spatial-hashed thin-instance accumulators for trees
-  type TreeCell = { species: Species; ridge: boolean; matrices: number[]; colors: number[] };
+  type TreeCell = { species: Species; ridge: boolean; casts: boolean; matrices: number[]; colors: number[] };
   const treeCells = new Map<string, TreeCell>();
-  const tints = ['#f7f4e9', '#fffbe8', '#e5efe7', '#ebe4cb'].map((c) =>
+  const tints = ['#faf7ed', '#fffce8', '#e5f0e4', '#ece5cc', '#dfe9d8'].map((c) =>
     Color3.FromHexString(c).toLinearSpace(),
   );
-  const trackCell = 360;
+  const trackCell = 320;
 
-  function plantTree(species: Species, pos: Vec, scale: Vec, yaw: number, tint: number, ridge = false) {
+  function plantTree(
+    species: Species,
+    pos: Vec,
+    scale: Vec,
+    yaw: number,
+    tint: number,
+    ridge = false,
+    castsShadow = false,
+  ) {
     const x = Math.floor((pos[0] + 160) / (ridge ? 520 : trackCell));
     const z = ridge ? Math.sign(pos[2]) : Math.floor((pos[2] + 100) / trackCell);
-    const key = `venue.${ridge ? 'ridge.' : ''}${species}@${x}:${z}`;
+    const key = `venue.${ridge ? 'ridge.' : castsShadow ? 'near.' : ''}${species}@${x}:${z}`;
     let cell = treeCells.get(key);
     if (!cell) {
-      cell = { species, ridge, matrices: [], colors: [] };
+      cell = { species, ridge, casts: castsShadow && !ridge, matrices: [], colors: [] };
       treeCells.set(key, cell);
     }
     const m = Matrix.Compose(
@@ -199,57 +275,68 @@ export async function createBotanicalForest(scene: Scene) {
   }
 
   // Spatial-hashed thin-instance accumulators for Poly Haven photogrammetry biome props
-  type PropCell = { prop: BiomeProp; variant: number; matrices: number[] };
+  type PropCell = { prop: BiomeProp; variant: number; casts: boolean; matrices: number[] };
   const propCells = new Map<string, PropCell>();
 
-  function plantBiome(prop: BiomeProp, pos: Vec, scale: Vec, yaw: number, variant = 0) {
+  function plantBiome(prop: BiomeProp, pos: Vec, scale: Vec, yaw: number, variant = 0, casts = false) {
     const templates = biomeTemplates.get(prop);
     if (!templates?.length) return;
-    const vIdx = Math.abs(variant) % templates.length;
-    const x = Math.floor((pos[0] + 160) / 480);
-    const z = Math.floor((pos[2] + 100) / 480);
-    const key = `venue.biome.${prop}.${vIdx}@${x}:${z}`;
-    let cell = propCells.get(key);
-    if (!cell) {
-      cell = { prop, variant: vIdx, matrices: [] };
-      propCells.set(key, cell);
-    }
+    // Multi-part scanned trees (coastal_tree, scrub_tree) must emit ALL sub-primitives together
+    const multiPart = prop === 'coastal_tree' || prop === 'scrub_tree';
+    const indices = multiPart ? templates.map((_, idx) => idx) : [Math.abs(variant) % templates.length];
+    const x = Math.floor((pos[0] + 160) / 420);
+    const z = Math.floor((pos[2] + 100) / 420);
     const m = Matrix.Compose(
       Vector3.FromArray(scale),
       Quaternion.RotationAxis(Vector3.UpReadOnly, yaw),
       Vector3.FromArray(pos),
     );
-    cell.matrices.push(...m.m);
+    for (const vIdx of indices) {
+      const key = `venue.biome.${prop}.${vIdx}@${x}:${z}`;
+      let cell = propCells.get(key);
+      if (!cell) {
+        cell = { prop, variant: vIdx, casts, matrices: [] };
+        propCells.set(key, cell);
+      }
+      cell.matrices.push(...m.m);
+    }
   }
 
   function finish() {
     for (const [name, cell] of treeCells) {
       const transforms = Float32Array.from(cell.matrices),
         colors = Float32Array.from(cell.colors);
-      const makeBatch = (geomKey: string, label: string, casts: boolean) => {
+      const makeBatch = (geomKey: string, label: string, mat: PBRMaterial, casts: boolean, useColors: boolean) => {
         const g = treeGeoms.get(geomKey);
         if (!g) return null;
         const mesh = new Mesh(label, scene);
         g.applyToMesh(mesh);
-        mesh.material = treeMat;
+        mesh.material = mat;
         mesh.cullingStrategy = Mesh.CULLINGSTRATEGY_OPTIMISTIC_INCLUSION;
         mesh.isPickable = false;
         mesh.receiveShadows = true;
         mesh.thinInstanceSetBuffer('matrix', transforms, 16, true);
-        mesh.thinInstanceSetBuffer('color', colors, 4, true);
-        mesh.metadata = { trackShadowCaster: casts, shadowCaster: casts };
+        if (useColors) mesh.thinInstanceSetBuffer('color', colors, 4, true);
+        mesh.metadata = { trackShadowCaster: casts, shadowCaster: casts, nearTreeShadow: casts };
         mesh.freezeWorldMatrix();
         return mesh;
       };
-      if (cell.ridge) {
-        makeBatch(`${cell.species}_LOD1`, name, false);
-      } else {
-        const near = makeBatch(`${cell.species}_LOD0`, name, false);
-        const far = makeBatch(`${cell.species}_LOD1`, `${name}.lod1`, false);
-        if (near && far) {
-          const radius = near.getBoundingInfo().boundingSphere.radiusWorld;
-          near.addLODLevel(radius + 68, far);
-          far.setEnabled(false);
+
+      for (const part of ['Bark', 'Canopy'] as const) {
+        const mat = part === 'Bark' ? barkMat : canopyMat;
+        const useCol = part === 'Canopy';
+        // Near-track trees cast crisp sun shadows onto grass, kerbs, and track edges!
+        const casts = cell.casts;
+        if (cell.ridge) {
+          makeBatch(`${cell.species}_${part}_LOD1`, `${name}.${part}`, mat, false, useCol);
+        } else {
+          const near = makeBatch(`${cell.species}_${part}_LOD0`, `${name}.${part}`, mat, casts, useCol);
+          const far = makeBatch(`${cell.species}_${part}_LOD1`, `${name}.${part}.lod1`, mat, false, useCol);
+          if (near && far) {
+            const radius = near.getBoundingInfo().boundingSphere.radiusWorld;
+            near.addLODLevel(radius + 95, far);
+            far.setEnabled(false);
+          }
         }
       }
     }
@@ -264,10 +351,37 @@ export async function createBotanicalForest(scene: Scene) {
       mesh.isPickable = false;
       mesh.receiveShadows = true;
       mesh.thinInstanceSetBuffer('matrix', Float32Array.from(cell.matrices), 16, true);
-      mesh.metadata = { trackShadowCaster: false, shadowCaster: false };
+      mesh.metadata = { trackShadowCaster: cell.casts, shadowCaster: cell.casts, nearTreeShadow: cell.casts };
       mesh.freezeWorldMatrix();
     }
   }
 
-  return { plantTree, plantBiome, finish };
+  let clock = 0;
+  function setWeather(w: Weather) {
+    const wind = w === 'rain' ? 0.42 : w === 'damp' ? 0.28 : w === 'golden' ? 0.16 : 0.13;
+    const wet = w === 'rain' ? 0.92 : w === 'damp' ? 0.48 : 0.0;
+    const sss = w === 'golden' ? 0.85 : w === 'clear' ? 0.65 : w === 'damp' ? 0.10 : 0.04;
+    const col: [number, number, number] =
+      w === 'golden' ? [1.0, 0.76, 0.28] : w === 'clear' ? [0.76, 0.96, 0.36] : [0.52, 0.68, 0.48];
+    for (const p of plugins) {
+      p.windStrength = wind;
+      p.wetness = wet;
+      if (p !== barkWind) {
+        p.sssIntensity = sss;
+        p.sssColor = col;
+      }
+    }
+  }
+
+  function update(dt: number) {
+    clock += Math.max(0, Math.min(0.1, dt));
+    const sunDir = scene.metadata?.sunDir as Vector3 | undefined;
+    for (const p of plugins) {
+      p.time = clock;
+      if (sunDir) p.sunDir = [sunDir.x, sunDir.y, sunDir.z];
+    }
+  }
+
+  setWeather('golden');
+  return { plantTree, plantBiome, finish, setWeather, update };
 }

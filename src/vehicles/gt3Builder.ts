@@ -5,6 +5,7 @@ import { CreateGround } from '@babylonjs/core/Meshes/Builders/groundBuilder';
 import { PointLight } from '@babylonjs/core/Lights/pointLight';
 import { Quaternion } from '@babylonjs/core/Maths/math.vector';
 import { carFinish, contactShadow, pbr } from '../materials/carFinish';
+import { BrakeRotorThermalPlugin } from '../materials/carShader';
 import { corners, detailBands, studio } from './studio';
 
 const restCompression = 0.03,
@@ -39,10 +40,11 @@ export const buildVehicle: BuildVehicle = async (scene, chassis, livery, number)
   tail.emissiveColor.set(0.55, 0.006, 0.005);
   const rain = pbr(scene, number + '.rain', '#ab182c', 0.14, 0.21);
   rain.emissiveColor.set(2.1, 0.008, 0.002);
+  const rotorPlugins: BrakeRotorThermalPlugin[] = [];
   const rotors = corners.map((k) => {
-    const m = pbr(scene, `${number}.${k}.disc`, '#73757a', 0.7, 0.46);
+    const m = pbr(scene, `${number}.${k}.disc`, '#686b70', 0.78, 0.40);
     m.albedoTexture = f.discMap;
-    m.emissiveTexture = f.discMap;
+    rotorPlugins.push(new BrakeRotorThermalPlugin(m));
     return m;
   });
   const exhaust: Mesh[] = [];
@@ -139,30 +141,22 @@ export const buildVehicle: BuildVehicle = async (scene, chassis, livery, number)
       const steer = clamp(d.steer, -maxSteer, maxSteer),
         co = d.wheelCompressionM;
       if (detail === 0) Quaternion.RotationAxisToRef(s.columnAxis, -steer * 5.6, column.rotationQuaternion!);
-      let red = 0,
-        green = 0,
-        blue = 0;
+      let avgHeat = 0;
       for (let i = 0; i < 4; i++) {
-        // Thermal brake rotor glow: 250°C -> 850°C cherry-orange visible through wheel spokes
-        const t = clamp(((d.brakeTempC[i] ?? 20) - 250) / 560, 0, 1.35),
-          hot = Math.max(0, t - 0.22),
-          r = t * (0.58 + 2.9 * t),
-          g = hot * hot * 1.02,
-          b = hot * hot * 0.068;
+        // Physically-graded blackbody carbon-ceramic rotor glow (260°C cherry -> 840°C molten orange-white)
+        const heat = clamp(((d.brakeTempC[i] ?? 20) - 260) / 580, 0, 1);
         if (detail < 2) {
           const w = wheels[i];
           // Wheels droop slightly off the ground when lifted on pneumatic air-jacks
           w.hub.position.y = s.hubs[i].y + clamp(co[i] ?? restCompression, 0, 0.15) - restCompression + lift * 0.28;
           w.steer.rotation.y = i < 2 ? steer : 0;
           w.spin.rotation.x = d.wheelAngles?.[i] ?? d.wheelAngle;
-          rotors[i].emissiveColor.set(r, g, b);
+          rotorPlugins[i].heat = heat;
         } else {
-          red += r;
-          green += g;
-          blue += b;
+          avgHeat += heat;
         }
       }
-      if (detail >= 2) rotors[0].emissiveColor.set(red * 0.25, green * 0.25, blue * 0.25);
+      if (detail >= 2) rotorPlugins[0].heat = avgHeat * 0.25;
       const avg = (co[0] + co[1] + co[2] + co[3]) * 0.25;
       shadow.position.y = 0.025 + clamp(avg - restCompression, -0.02, 0.085);
       shadow.rotation.x = clamp(

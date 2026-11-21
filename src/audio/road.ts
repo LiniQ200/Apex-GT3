@@ -27,6 +27,10 @@ export function road(g: Graph, mix: AudioNode) {
   const hydro = g.gain(mix, 0);
   const hydroFilter = g.filter(hydro, 'bandpass', 2400, 0.65);
   g.noise(hydroFilter, 0.53);
+  // Subtle rain patter on carbon roof in cockpit view during heavy rain
+  const roofRain = g.gain(mix, 0);
+  const roofFilter = g.filter(roofRain, 'highpass', 3200, 0.7);
+  g.noise(roofFilter, 1.11);
 
   return (p: Driver, cockpit: boolean, wetness: number, now: number) => {
     const damp = wetness > 0.15;
@@ -56,5 +60,6 @@ export function road(g: Graph, mix: AudioNode) {
     smooth(wind.gain, (cockpit ? 0.29 : 0.55) * airspeed ** 1.8, now, 0.11);
     smooth(hydroFilter.frequency, 1500 + 2100 * airspeed, now, 0.08);
     smooth(hydro.gain, clamp(wetness) * (cockpit ? 0.24 : 0.38) * clamp(speed / 45) ** 1.35, now, 0.07);
+    smooth(roofRain.gain, cockpit && wetness > 0.55 ? (wetness - 0.55) * 0.14 : 0, now, 0.12);
   };
 }

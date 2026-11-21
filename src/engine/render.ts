@@ -349,6 +349,7 @@ export function lighting(scene: Scene) {
       }
     }
     sun.direction.copyFrom(disc).negateInPlace();
+    scene.metadata = { ...(scene.metadata ?? {}), sunDir: disc.clone().normalize() };
     tex.setReflectionTextureMatrix(transform);
     scene.environmentTexture = tex;
     skyView.setReflectionTextureMatrix(transform);
@@ -405,11 +406,13 @@ export function lighting(scene: Scene) {
   }
 
   if (cascades) {
-    // 2 tight texel-stabilized cascades: sharper car shadows & 2x faster shadow passes!
-    cascades.numCascades = 2;
-    cascades.lambda = 0.78;
+    // 3 tight texel-stabilized cascades on hardware GPU (2048px, 155m range) for razor-sharp
+    // car, gantry, grandstand, and roadside tree shadows; 2 crisp cascades on software adapters.
+    cascades.numCascades = isSoftware ? 2 : 3;
+    cascades.lambda = isSoftware ? 0.78 : 0.82;
     cascades.stabilizeCascades = true;
-    cascades.shadowMaxZ = 95;
+    cascades.cascadeBlendPercentage = 0.14;
+    cascades.shadowMaxZ = isSoftware ? 105 : 155;
   } else if (shadows) {
     sun.shadowFrustumSize = 96;
     sun.shadowMinZ = 0.1;
@@ -424,9 +427,9 @@ export function lighting(scene: Scene) {
     // Babylon 9.0.0 WGSL CSM PCF1 (QUALITY_LOW) has an upstream syntax bug (',,shadowTexture0Sampler').
     // QUALITY_MEDIUM (PCF3) generates valid WGSL and GLSL on both backends.
     shadows.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
-    shadows.bias = 0.00045;
-    shadows.normalBias = 0.028;
-    shadows.darkness = 0.14;
+    shadows.bias = 0.00028;
+    shadows.normalBias = 0.018;
+    shadows.darkness = 0.16;
   }
 
   function bindShadowVolumes() {
@@ -440,6 +443,9 @@ export function lighting(scene: Scene) {
       visibleCasters.length = 0;
       for (let i = 0; i < length; i++) {
         const m = list[i];
+        // On hardware GPUs, near-track trees cast crisp shadows in Cascades 0 & 1;
+        // on software CPU rasterizers (SwiftShader), skip alpha-tested tree shadow passes to keep QA snappy.
+        if ((isSoftware || layer >= 2) && m.metadata?.nearTreeShadow) continue;
         m.computeWorldMatrix();
         const { minimumWorld: lo, maximumWorld: hi } = m.getBoundingInfo().boundingBox;
         let p = 2;
@@ -458,13 +464,16 @@ export function lighting(scene: Scene) {
   let lamps: ReturnType<typeof raceLights> | undefined;
   let garage = true;
 
-  // Single locked Native 1080p pixel density — ZERO adaptive downscaling into blur!
+  // Single locked Native 1080p pixel density on hardware GPUs — ZERO adaptive downscaling into blur!
+  // Software CPU rasterizers (SwiftShader/llvmpipe) stay at 1x CSS pixel density so CI/VM runs stay snappy.
   function resize() {
     const canvas = engine.getRenderingCanvas()!;
     const w = Math.max(1, canvas.clientWidth),
       h = Math.max(1, canvas.clientHeight);
     const budget = 1920 * 1080;
-    const ratio = Math.min(window.devicePixelRatio || 1, Math.max(1, Math.sqrt(budget / (w * h))), maxMap / Math.max(w, h));
+    const ratio = isSoftware
+      ? 1
+      : Math.min(window.devicePixelRatio || 1, Math.max(1, Math.sqrt(budget / (w * h))), maxMap / Math.max(w, h));
     const scale = 1 / ratio;
     if (Math.abs(scale - engine.getHardwareScalingLevel()) > 0.001) engine.setHardwareScalingLevel(scale);
     else engine.resize();

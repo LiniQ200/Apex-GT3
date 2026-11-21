@@ -8,7 +8,7 @@ In the cockpit, read the instruments in the car. Select **MoTeC C127** to open t
 
 ## Play a downloaded release
 
-Phones and computers open the same 3D game. Use a current browser with WebGPU or WebGL 2 and graphics acceleration. The engine runs a single locked **Native 1080p Direct Forward PBR** pipeline with 4× hardware MSAA, 16× anisotropic texture filtering, Khronos PBR Neutral tone mapping, 4-cascade stabilized sun shadows, and strictly zero motion blur or muddy post-processing. Devices without either graphics API cannot run this game.
+Phones and computers open the same 3D game. Use a current browser with WebGPU or WebGL 2 and graphics acceleration. The engine runs a single locked **Native 1080p Direct Forward PBR** pipeline with 4× hardware MSAA, 16× anisotropic texture filtering, Khronos PBR Neutral tone mapping, 3-cascade texel-stabilized sun shadows (2 cascades on software adapters), cross-backend WGSL/GLSL shaders (volumetric drifting clouds, GPU foliage wind & backlit leaf translucency, raindrop asphalt puddle ripples, slope-driven Tuscan terrain, metallic clearcoat rain-beading, blackbody carbon-ceramic brake rotors, and GPU cloth flags), and strictly zero motion blur or muddy post-processing. Drag in Competition Garage Bay 01 to orbit the car. Devices without either graphics API cannot run this game.
 
 If launch stalls, select **Launch with WebGL 2** on the loading screen. This runs the same cars, lighting and circuit without waiting for a WebGPU device. Open the link directly in your browser if an embedded preview blocks 3D graphics.
 
@@ -16,6 +16,6 @@ For offline play, download the full game from the garage’s **Controls** panel 
 
 ## Build from source
 
-Use Node.js 22.12 or newer and `npm ci`. `npm run dev` starts the development server. `npm run build` checks TypeScript, builds the 3D site under `dist/`, and packages the same game in `dist/downloads/apex-gt3.zip`. `npm run preview` serves those files. For WebGPU on a hosted site, use HTTPS.
+Use Node.js 22.12 or newer and `npm ci`. `npm run dev` starts the development server. `npm run build` checks TypeScript, builds the 3D site under `dist/`, and packages the same game in `dist/downloads/apex-gt3.zip`. `npm run preview` serves those files. For WebGPU on a hosted site, use HTTPS. Run `bun test ./src` for unit/Jolt physics tests, `npm run verify:orb -- --full-profile --webgpu` / `--webgl2` / default 3-lap sprint for rendered verification, and `node scripts/check-platforms.mjs` / `node scripts/check-session.mjs` against a running preview for failover and session regressions.
 
 Dev and build prepare any missing assets. To prepare deliberately offline after installing the locked packages, use `npm run fetch:assets -- --offline`. When connectivity returns, `npm run fetch:assets` replaces available substitutions. No keys or third-party requests are needed while playing. See `public/credits.txt` for the car, scenery, engine and font credits.

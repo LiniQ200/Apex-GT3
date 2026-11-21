@@ -51,7 +51,7 @@ page.on('response', (r) => {
     faults.push(`${r.status()} ${path}`);
     console.log(faults.at(-1));
   }
-  if (/^\/assets\/(draco|models|skies|asphalt|concrete|kerb|terrain|gravel|bark|metal|foliage|kit|biome)\//.test(path)) assets.add(path);
+  if (/^\/assets\/(draco|models|skies|asphalt|concrete|kerb|terrain|gravel|bark|metal|foliage|kit|biome|props)\//.test(path)) assets.add(path);
 });
 page.on('requestfailed', (r) => {
   if (r.failure()?.errorText !== 'net::ERR_ABORTED') faults.push(`${r.failure()?.errorText} ${r.url()}`);
@@ -343,13 +343,30 @@ try {
     'draco/draco_decoder.wasm',
     'skies/golden_hour.env',
     'foliage/mediterranean-atlas.webp',
+    'foliage/mediterranean-normal.webp',
     'kit/botanical.glb',
     'kit/trackside.glb',
     'biome/rock_moss.glb',
     'biome/fern.glb',
     'biome/shrub.glb',
     'biome/grass_clump.glb',
+    'biome/cliff_rock.glb',
+    'biome/boulder.glb',
+    'biome/med_bush.glb',
+    'biome/coastal_tree.glb',
+    'biome/scrub_tree.glb',
+    'biome/stump.glb',
+    'props/tool_cart.glb',
+    'props/tool_chest.glb',
+    'props/fuel_drum.glb',
+    'props/air_rig.glb',
+    'props/jersey_barrier.glb',
+    'props/parts_cart.glb',
+    'props/toolbox.glb',
+    'props/pit_crate.glb',
+    'bark/albedo.jpg',
     'bark/normal.jpg',
+    'bark/orm.jpg',
     ...['asphalt', 'concrete', 'terrain', 'kerb', 'gravel', 'metal'].flatMap((s) =>
       ['albedo', 'normal', 'orm'].map((k) => `${s}/${k}.jpg`),
     ),

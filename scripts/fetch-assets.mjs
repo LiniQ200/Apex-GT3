@@ -222,7 +222,7 @@ await Promise.all([
   ),
   haven('overcast_race', ['overcast_soil_puresky', 'kloofendal_48d_partly_cloudy_puresky'], true),
   haven('heavy_rain', ['mud_road_puresky', 'approaching_storm', 'overcast_soil_puresky'], true),
-  haven('asphalt', ['asphalt_02', 'asphalt_04']),
+  haven('asphalt', ['asphalt_track', 'asphalt_02', 'asphalt_04']),
   haven('concrete', ['concrete_layers_02', 'concrete_wall_006']),
   haven('kerb', ['painted_plaster_wall', 'concrete_floor_painted']),
   haven('terrain', ['aerial_grass_rock', 'coast_sand_rocks_02']),
@@ -232,14 +232,28 @@ await Promise.all([
 ]);
 await prepareTrackMaps({ root, assets, previous, cached, save });
 for (const [rel, src] of [
-  ['foliage/italian-conifers.webp', 'Valle d’Oro original / scripts/bake-foliage.py (CC0-1.0)'],
-  ['foliage/mediterranean-atlas.webp', 'Valle d’Oro original / scripts/bake-foliage-mediterranean.py (CC0-1.0)'],
-  ['kit/botanical.glb', 'Blender 4.3 botanical kit / scripts/blender_generate_circuit_kit.py (CC0-1.0)'],
+  ['foliage/mediterranean-atlas.webp', 'Valle d’Oro Mediterranean 4-species photorealistic botanical atlas (CC0-1.0)'],
+  ['foliage/mediterranean-normal.webp', 'Valle d’Oro Mediterranean 4-species botanical tangent-space normal map (CC0-1.0)'],
+  ['kit/botanical.glb', 'Valle d’Oro branching 3D Mediterranean botanical kit / scripts/build-botanical-kit.mjs (CC0-1.0)'],
   ['kit/trackside.glb', 'Blender 4.3 FIA trackside kit / scripts/blender_generate_circuit_kit.py (CC0-1.0)'],
   ['biome/rock_moss.glb', 'Poly Haven rock_moss_set_01 (CC0-1.0, compiled via glTF-Transform)'],
   ['biome/fern.glb', 'Poly Haven fern_02 (CC0-1.0, compiled via glTF-Transform)'],
   ['biome/shrub.glb', 'Poly Haven shrub_sorrel_01 (CC0-1.0, compiled via glTF-Transform)'],
   ['biome/grass_clump.glb', 'Poly Haven grass_medium_01 (CC0-1.0, compiled via glTF-Transform)'],
+  ['biome/cliff_rock.glb', 'Poly Haven rock_face_02 (CC0-1.0, compiled via glTF-Transform)'],
+  ['biome/boulder.glb', 'Poly Haven rock_09 (CC0-1.0, compiled via glTF-Transform)'],
+  ['biome/med_bush.glb', 'Poly Haven wild_rooibos_bush (CC0-1.0, compiled via glTF-Transform)'],
+  ['biome/coastal_tree.glb', 'Poly Haven island_tree_02 (CC0-1.0, compiled via glTF-Transform)'],
+  ['biome/scrub_tree.glb', 'Poly Haven searsia_lucida (CC0-1.0, compiled via glTF-Transform)'],
+  ['biome/stump.glb', 'Poly Haven tree_stump_01 (CC0-1.0, compiled via glTF-Transform)'],
+  ['props/tool_cart.glb', 'Poly Haven tool_cart (CC0-1.0, compiled via glTF-Transform)'],
+  ['props/tool_chest.glb', 'Poly Haven metal_tool_chest (CC0-1.0, compiled via glTF-Transform)'],
+  ['props/fuel_drum.glb', 'Poly Haven Barrel_01 (CC0-1.0, compiled via glTF-Transform)'],
+  ['props/air_rig.glb', 'Poly Haven tire_pump (CC0-1.0, compiled via glTF-Transform)'],
+  ['props/jersey_barrier.glb', 'Poly Haven concrete_road_barrier_02 (CC0-1.0, compiled via glTF-Transform)'],
+  ['props/parts_cart.glb', 'Poly Haven industrial_storage_cart (CC0-1.0, compiled via glTF-Transform)'],
+  ['props/toolbox.glb', 'Poly Haven metal_toolbox (CC0-1.0, compiled via glTF-Transform)'],
+  ['props/pit_crate.glb', 'Poly Haven plastic_crate_02 (CC0-1.0, compiled via glTF-Transform)'],
 ]) {
   await save(rel, await readFile(`assets/${rel}`), src);
 }

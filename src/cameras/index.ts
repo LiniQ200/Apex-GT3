@@ -49,16 +49,55 @@ export function createCameras(
     lastSpeed = 0,
     lastYaw = 0,
     followYaw = 0,
-    garageClock = 0;
+    garageClock = 0,
+    rumbleClock = 0,
+    orbitYaw = 0,
+    orbitPitch = 0,
+    orbitDragging = false,
+    orbitLastX = 0,
+    orbitLastY = 0;
   const sway = spring(),
     heave = spring(),
     surge = spring(),
-    lens = spring();
+    lens = spring(),
+    apexLook = spring();
   const reducedMotion =
     typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+  // Interactive Competition Garage Bay 01 orbit drag so players can inspect their GT3 from every angle
+  if (canvas) {
+    const onDown = (e: PointerEvent) => {
+      if (lastShot !== 'garage' || e.button !== 0) return;
+      orbitDragging = true;
+      orbitLastX = e.clientX;
+      orbitLastY = e.clientY;
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!orbitDragging) return;
+      orbitYaw = clamp(orbitYaw - (e.clientX - orbitLastX) * 0.0055, -2.4, 2.4);
+      orbitPitch = clamp(orbitPitch + (e.clientY - orbitLastY) * 0.0035, -0.09, 0.28);
+      orbitLastX = e.clientX;
+      orbitLastY = e.clientY;
+    };
+    const onUp = () => {
+      orbitDragging = false;
+    };
+    canvas.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    scene.onDisposeObservable.addOnce(() => {
+      canvas.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    });
+  }
+
   function garage(dt: number) {
     garageClock += dt;
+    if (!orbitDragging) {
+      orbitYaw *= Math.exp(-0.22 * dt);
+      orbitPitch *= Math.exp(-0.35 * dt);
+    }
     const w = canvas?.clientWidth || window.innerWidth || 1280,
       h = canvas?.clientHeight || window.innerHeight || 720,
       aspect = w / h;
@@ -68,10 +107,10 @@ export function createCameras(
     const free = compact ? w : w - panel - 2 * edge;
     const centreX = compact ? w * 0.5 : edge + free * 0.5,
       centreY = h * (compact ? 0.325 : 0.535);
-    const angle = -0.91 + (reducedMotion ? 0 : 0.16 * Math.sin(garageClock * 0.135));
+    const angle = -0.91 + orbitYaw + (reducedMotion ? 0 : 0.16 * Math.sin(garageClock * 0.135));
     const sx = Math.sin(angle),
       sz = Math.cos(angle),
-      elev = 0.195 + (reducedMotion ? 0 : 0.017 * Math.sin(garageClock * 0.11));
+      elev = clamp(0.195 + orbitPitch + (reducedMotion ? 0 : 0.017 * Math.sin(garageClock * 0.11)), 0.09, 0.48);
     const se = Math.sin(elev),
       ce = Math.cos(elev);
     camera.fov = 0.66;
@@ -112,7 +151,8 @@ export function createCameras(
       }
       if (!car) return;
       const shot = lookBack ? 'reverse' : s.camera;
-      const jump = Math.hypot(car.x - lastX, car.z - lastZ) > Math.max(18, car.speed * dt * 2.5);
+      const movedDist = Math.hypot(car.x - lastX, car.z - lastZ);
+      const jump = movedDist > Math.max(18, car.speed * dt * 2.5);
       const cut = lastShot !== shot || jump;
       const deltaYaw = cut ? 0 : wrapAngle(car.yaw - lastYaw),
         acc = cut || dt < 0.001 ? 0 : (car.speed - lastSpeed) / dt;
@@ -128,6 +168,19 @@ export function createCameras(
       const sin = Math.sin(car.yaw),
         cos = Math.cos(car.yaw),
         speed = clamp(car.speed / 85, 0, 1);
+      // Tactile kerb/gravel & high-speed aero chassis micro-rumble (only while actually moving; zero jitter when paused/frozen)
+      const moving = movedDist > 0.001 && !cut;
+      if (moving) rumbleClock += dt * (24 + 42 * speed);
+      const surfaceAmp =
+        reducedMotion || !moving || car.speed < 4
+          ? 0
+          : car.surface === 'kerb'
+            ? 0.016 * (0.4 + 0.6 * speed)
+            : car.surface === 'gravel' || car.surface === 'grass'
+              ? 0.024 * (0.4 + 0.6 * speed)
+              : 0.0022 * speed * speed;
+      const shakeY = surfaceAmp * Math.sin(rumbleClock * 1.9);
+      const shakeX = surfaceAmp * 0.55 * Math.cos(rumbleClock * 1.3);
 
       if (shot === 'chase' || shot === 'reverse') {
         const back = shot === 'reverse';
@@ -136,18 +189,18 @@ export function createCameras(
         const fs = Math.sin(followYaw),
           fc = Math.cos(followYaw),
           dist = 5.85 + speed * 0.55 + pull * 0.85,
-          height = 2.08 + speed * 0.16 + dip;
+          height = 2.08 + speed * 0.16 + dip + shakeY * 0.7;
         camera.position.set(
-          car.x - fs * dist + fc * side,
+          car.x - fs * dist + fc * (side + shakeX),
           car.y + height + (back ? -1 : 1) * dist * Math.sin(car.pitch) * 0.85,
-          car.z - fc * dist - fs * side,
+          car.z - fc * dist - fs * (side + shakeX),
         );
         target.set(
           car.x + fs * 2.55,
           car.y + 0.94 - (back ? -1 : 1) * 2.55 * Math.sin(car.pitch),
           car.z + fc * 2.55,
         );
-        camera.fov = lens.at(0.84 + 0.12 * speed, 6.5, dt, cut);
+        camera.fov = lens.at(0.84 + 0.14 * speed, 6.5, dt, cut);
         camera.setTarget(target);
         camera.rotation.z = clamp(car.roll * 0.22 + side * 0.025, -0.03, 0.03);
         return;
@@ -156,23 +209,27 @@ export function createCameras(
         const helmet = shot === 'cockpit',
           central = s.settings.chassis === 'concept';
         Matrix.RotationYawPitchRollToRef(car.yaw, car.pitch, car.roll, rotation);
-        if (eye) camera.position.copyFrom(eye);
-        else {
+        // Subtle G-force helmet sway, braking pitch nod, and steering apex look-into-turn
+        const lookBias = apexLook.at(helmet ? clamp(car.steer * 5.2, -2.4, 2.4) : 0, 7.5, dt, cut);
+        if (eye) {
+          camera.position.copyFrom(eye);
+          camera.position.y += shakeY * 0.45 - (helmet ? dip * 0.12 : 0);
+        } else {
           // Provisional helmet pose while a new rig is loading behind the curtain.
           local.set(
             helmet && !central ? -0.315 : 0,
-            helmet ? (central ? 1.11 : 0.96) : 1.06,
+            (helmet ? (central ? 1.11 : 0.96) : 1.06) + shakeY * 0.45,
             helmet ? (central ? 0.24 : -0.16) : 1.21,
           );
           Vector3.TransformCoordinatesToRef(local, rotation, camera.position);
           camera.position.addInPlaceFromFloats(car.x, car.y, car.z);
         }
-        local.set(0, helmet ? -1.05 : -1.92, 24);
+        local.set(lookBias, (helmet ? -1.05 : -1.92) - dip * 0.9, 24);
         Vector3.TransformNormalToRef(local, rotation, target);
         target.addInPlace(camera.position);
-        camera.fov = lens.at(helmet ? 1.06 : 0.935 + 0.055 * speed, 8, dt, cut);
+        camera.fov = lens.at(helmet ? 1.05 + 0.045 * speed : 0.935 + 0.065 * speed, 8, dt, cut);
         camera.setTarget(target);
-        camera.rotation.z = car.roll;
+        camera.rotation.z = car.roll + (helmet ? clamp(-lat * 0.0012, -0.022, 0.022) : 0);
         return;
       }
       // A chain of fixed tripod positions cuts between high stand, low apex and
